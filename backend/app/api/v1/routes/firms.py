@@ -1,0 +1,251 @@
+"""Routes scoped to the authenticated Gestor's own accounting firm."""
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.api.v1.schemas.companies import CompanyCreate, CompanyRead, CompanyUpdate
+from app.api.v1.schemas.firms import AccountingFirmRead, AccountingFirmUpdate, SubscriptionRead
+from app.api.v1.schemas.users import UserCreate, UserRead, UserUpdate
+from app.core.deps import GestorUser
+from app.core.security import hash_password
+from app.db.models import AccountingFirm, Company, Subscription, User, UserRole
+from app.db.session import get_db
+
+router = APIRouter(prefix="/firms", tags=["firms"])
+
+
+async def _get_firm_with_sub(firm_id: str, db: AsyncSession) -> AccountingFirm:
+    result = await db.execute(
+        select(AccountingFirm)
+        .options(selectinload(AccountingFirm.subscription))
+        .where(AccountingFirm.id == firm_id)
+    )
+    firm = result.scalar_one_or_none()
+    if not firm:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Escritório não encontrado")
+    return firm
+
+
+# ─── Firm Profile ─────────────────────────────────────────────────────────────
+
+@router.get("/me", response_model=AccountingFirmRead)
+async def get_my_firm(
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AccountingFirm:
+    if not current_user.accounting_firm_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sem escritório associado")
+    return await _get_firm_with_sub(current_user.accounting_firm_id, db)
+
+
+@router.patch("/me", response_model=AccountingFirmRead)
+async def update_my_firm(
+    payload: AccountingFirmUpdate,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AccountingFirm:
+    if not current_user.accounting_firm_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sem escritório associado")
+
+    firm = await _get_firm_with_sub(current_user.accounting_firm_id, db)
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(firm, field, value)
+
+    await db.commit()
+    await db.refresh(firm)
+    return firm
+
+
+# ─── Subscription ─────────────────────────────────────────────────────────────
+
+@router.get("/me/subscription", response_model=SubscriptionRead)
+async def get_my_subscription(
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Subscription:
+    if not current_user.accounting_firm_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sem escritório associado")
+
+    result = await db.execute(
+        select(Subscription)
+        .join(AccountingFirm)
+        .where(AccountingFirm.id == current_user.accounting_firm_id)
+    )
+    sub = result.scalar_one_or_none()
+    if not sub:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assinatura não encontrada")
+    return sub
+
+
+# ─── Client Companies ─────────────────────────────────────────────────────────
+
+@router.get("/me/companies", response_model=list[CompanyRead])
+async def list_companies(
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    skip: int = 0,
+    limit: int = 100,
+) -> list[Company]:
+    result = await db.execute(
+        select(Company)
+        .where(Company.accounting_firm_id == current_user.accounting_firm_id)
+        .offset(skip)
+        .limit(limit)
+        .order_by(Company.name)
+    )
+    return list(result.scalars().all())
+
+
+@router.post("/me/companies", response_model=CompanyRead, status_code=status.HTTP_201_CREATED)
+async def create_company(
+    payload: CompanyCreate,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Company:
+    existing = await db.execute(
+        select(Company).where(
+            Company.accounting_firm_id == current_user.accounting_firm_id,
+            Company.cnpj == payload.cnpj,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Empresa com este CNPJ já cadastrada")
+
+    company = Company(
+        accounting_firm_id=current_user.accounting_firm_id,
+        **payload.model_dump(),
+    )
+    db.add(company)
+    await db.commit()
+    await db.refresh(company)
+    return company
+
+
+@router.get("/me/companies/{company_id}", response_model=CompanyRead)
+async def get_company(
+    company_id: str,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Company:
+    result = await db.execute(
+        select(Company).where(
+            Company.id == company_id,
+            Company.accounting_firm_id == current_user.accounting_firm_id,
+        )
+    )
+    company = result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empresa não encontrada")
+    return company
+
+
+@router.patch("/me/companies/{company_id}", response_model=CompanyRead)
+async def update_company(
+    company_id: str,
+    payload: CompanyUpdate,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Company:
+    result = await db.execute(
+        select(Company).where(
+            Company.id == company_id,
+            Company.accounting_firm_id == current_user.accounting_firm_id,
+        )
+    )
+    company = result.scalar_one_or_none()
+    if not company:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empresa não encontrada")
+
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(company, field, value)
+
+    await db.commit()
+    await db.refresh(company)
+    return company
+
+
+# ─── Operador Users ───────────────────────────────────────────────────────────
+
+@router.get("/me/users", response_model=list[UserRead])
+async def list_operators(
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[User]:
+    result = await db.execute(
+        select(User).where(
+            User.accounting_firm_id == current_user.accounting_firm_id,
+            User.role == UserRole.OPERADOR,
+        )
+    )
+    return list(result.scalars().all())
+
+
+@router.post("/me/users", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+async def create_operator(
+    payload: UserCreate,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    existing = await db.execute(select(User).where(User.email == payload.email.lower()))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email já cadastrado")
+
+    user = User(
+        email=payload.email.lower(),
+        password_hash=hash_password(payload.password),
+        full_name=payload.full_name,
+        role=UserRole.OPERADOR,
+        accounting_firm_id=current_user.accounting_firm_id,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.patch("/me/users/{user_id}", response_model=UserRead)
+async def update_operator(
+    user_id: str,
+    payload: UserUpdate,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.accounting_firm_id == current_user.accounting_firm_id,
+        )
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
+
+    for field, value in payload.model_dump(exclude_none=True).items():
+        setattr(user, field, value)
+
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@router.delete("/me/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def deactivate_operator(
+    user_id: str,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.accounting_firm_id == current_user.accounting_firm_id,
+        )
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Usuário não encontrado")
+
+    user.is_active = False
+    await db.commit()

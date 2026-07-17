@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node
+node_modules/
+.next/
+.turbo/
+out/
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+
+# Secrets
+.env.local
+.env.*.local
+
+# Alembic
+backend/alembic/versions/*.pyc
+
+# Storage local de arquivos de job (ver app/core/storage.py)
+backend/data/
+
+# Dados reais de cliente usados para teste manual (CNPJ, contador, valores
+# fiscais reais) — nunca deve ir para o histórico do git.
+Arquivo Modelo/
+Validacao/
+# Sobras de teste manual via CLI (backend/app/sped/cli.py) soltas na raiz do
+# backend — não são fixture de nenhum teste (os testes geram os próprios
+# arquivos em tmp_path). sped_00033_saida.txt em particular é saída real de
+# cliente (mesma origem de Arquivo Modelo/), não sintética.
+backend/sped_entrada.txt
+backend/sped_saida.txt
+backend/sped_passo1.txt
+backend/sped_00033_saida.txt
+
+# Config local do Claude Code (permission allowlist específico da máquina)
+.claude/settings.local.json

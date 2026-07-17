@@ -1,4 +1,5 @@
 """Routes scoped to the authenticated Gestor's own accounting firm."""
+import asyncio
 import logging
 from typing import Annotated
 
@@ -21,6 +22,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/firms", tags=["firms"])
 
 _BRASILAPI_CNPJ_URL = "https://brasilapi.com.br/api/cnpj/v1/{cnpj}"
+# BrasilAPI (plano gratuito) tem rate limit apertado — picos curtos de 429 são
+# comuns mesmo em uso normal (1 consulta por cadastro). Absorve automaticamente
+# com 2 retries curtos antes de repassar erro pro usuário.
+_BRASILAPI_MAX_RETRIES = 2
+_BRASILAPI_RETRY_DELAY_SECONDS = 1.5
 
 
 async def _get_firm_with_sub(firm_id: str, db: AsyncSession) -> AccountingFirm:
@@ -100,13 +106,22 @@ async def lookup_cnpj(cnpj: str, current_user: GestorUser) -> CnpjLookupResult:
         )
 
     async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            resp = await client.get(_BRASILAPI_CNPJ_URL.format(cnpj=digits))
-        except httpx.RequestError as exc:
-            logger.warning("Falha ao consultar CNPJ %s na BrasilAPI: %s", digits, exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY, detail="Erro ao consultar CNPJ"
-            ) from exc
+        for attempt in range(_BRASILAPI_MAX_RETRIES + 1):
+            try:
+                resp = await client.get(_BRASILAPI_CNPJ_URL.format(cnpj=digits))
+            except httpx.RequestError as exc:
+                logger.warning("Falha ao consultar CNPJ %s na BrasilAPI: %s", digits, exc)
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY, detail="Erro ao consultar CNPJ"
+                ) from exc
+
+            if resp.status_code != 429 or attempt == _BRASILAPI_MAX_RETRIES:
+                break
+            logger.info(
+                "BrasilAPI rate limited (429) para CNPJ %s — retry %d/%d em %.1fs",
+                digits, attempt + 1, _BRASILAPI_MAX_RETRIES, _BRASILAPI_RETRY_DELAY_SECONDS,
+            )
+            await asyncio.sleep(_BRASILAPI_RETRY_DELAY_SECONDS)
 
     if resp.status_code == 404:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CNPJ não encontrado")
@@ -115,6 +130,14 @@ async def lookup_cnpj(cnpj: str, current_user: GestorUser) -> CnpjLookupResult:
         # correto de 14 dígitos, mas checksum não bate) — distinto de "não
         # encontrado" (404, CNPJ válido mas fora da base da Receita).
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CNPJ inválido")
+    if resp.status_code == 429:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Consulta de CNPJ temporariamente indisponível (limite de "
+                "requisições) — tente novamente em alguns segundos"
+            ),
+        )
     if resp.status_code != 200:
         logger.warning("BrasilAPI retornou %d para CNPJ %s", resp.status_code, digits)
         raise HTTPException(

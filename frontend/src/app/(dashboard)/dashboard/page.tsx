@@ -1,18 +1,25 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { Building2, CheckCircle2, FileText, Upload } from "lucide-react";
 import type { UserProfile, AccountingFirm } from "@/types";
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [user, setUser] = useState<UserProfile | null>(null);
   const [firm, setFirm] = useState<AccountingFirm | null>(null);
 
   useEffect(() => {
-    api.get("/auth/me").then((r) => setUser(r.data));
+    api.get("/auth/me").then((r) => {
+      setUser(r.data);
+      if (r.data.role === "ADMIN") {
+        router.replace("/admin");
+      }
+    });
     api.get("/firms/me").then((r) => setFirm(r.data)).catch(() => null);
-  }, []);
+  }, [router]);
 
   const planLabels: Record<string, string> = {
     STARTER: "Starter",

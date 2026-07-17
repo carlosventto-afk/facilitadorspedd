@@ -95,6 +95,21 @@ async def gestor_user(db: AsyncSession, accounting_firm: AccountingFirm) -> User
 
 
 @pytest_asyncio.fixture
+async def admin_user(db: AsyncSession) -> User:
+    user = User(
+        email="admin@teste.com.br",
+        password_hash=hash_password("Admin@123"),
+        full_name="Admin Teste",
+        role=UserRole.ADMIN,
+        accounting_firm_id=None,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+@pytest_asyncio.fixture
 async def company(db: AsyncSession, accounting_firm: AccountingFirm) -> Company:
     comp = Company(
         accounting_firm_id=accounting_firm.id,

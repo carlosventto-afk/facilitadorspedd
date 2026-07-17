@@ -6,6 +6,7 @@ import {
   Building2,
   FileText,
   Home,
+  LayoutDashboard,
   LogOut,
   Settings,
   Upload,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { useCurrentUser } from "@/lib/useCurrentUser";
 import { toast } from "sonner";
 
 const navItems = [
@@ -23,9 +25,17 @@ const navItems = [
   { href: "/assinatura", label: "Assinatura", icon: Settings },
 ];
 
+const adminNavItems = [
+  { href: "/admin", label: "Painel Admin", icon: LayoutDashboard, exact: true },
+  { href: "/admin/escritorios", label: "Escritórios", icon: Building2 },
+  { href: "/admin/usuarios", label: "Usuários", icon: Users },
+];
+
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const { user } = useCurrentUser();
+  const items = user?.role === "ADMIN" ? adminNavItems : navItems;
 
   const handleLogout = async () => {
     try {
@@ -53,7 +63,7 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-3 py-4 space-y-1">
-        {navItems.map(({ href, label, icon: Icon, exact }) => {
+        {items.map(({ href, label, icon: Icon, exact }) => {
           const isActive = exact ? pathname === href : pathname.startsWith(href);
           return (
             <Link

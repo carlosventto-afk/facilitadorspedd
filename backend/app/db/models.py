@@ -89,6 +89,7 @@ class AccountingFirm(Base, TimestampMixin):
     cnpj: Mapped[str] = mapped_column(String(14), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(20))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     subscription_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("subscriptions.id", ondelete="SET NULL")
     )

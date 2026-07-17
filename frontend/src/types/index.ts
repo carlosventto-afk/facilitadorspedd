@@ -26,7 +26,15 @@ export interface AccountingFirm {
   cnpj: string;
   email: string;
   phone: string | null;
+  is_active: boolean;
   subscription: Subscription | null;
+}
+
+export interface AdminStats {
+  total_accounting_firms: number;
+  active_subscriptions: number;
+  total_jobs_processed: number;
+  failed_jobs: number;
 }
 
 export interface CnpjRegistryData {

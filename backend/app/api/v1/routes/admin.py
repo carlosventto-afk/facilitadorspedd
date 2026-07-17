@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.v1.schemas.firms import AccountingFirmCreate, AccountingFirmList, AccountingFirmRead, AccountingFirmUpdate
+from app.api.v1.schemas.firms import AccountingFirmCreate, AccountingFirmRead, AccountingFirmUpdate
 from app.api.v1.schemas.users import UserCreate, UserRead, UserUpdate
 from app.core.deps import AdminUser
 from app.core.security import hash_password
@@ -32,7 +32,7 @@ PLAN_LIMITS = {
 
 # ─── Accounting Firms ─────────────────────────────────────────────────────────
 
-@router.get("/accounting-firms", response_model=list[AccountingFirmList])
+@router.get("/accounting-firms", response_model=list[AccountingFirmRead])
 async def list_firms(
     _: AdminUser,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -122,7 +122,19 @@ async def update_firm(
     if not firm:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Escritório não encontrado")
 
-    for field, value in payload.model_dump(exclude_none=True).items():
+    updates = payload.model_dump(exclude_none=True)
+    # "plan" não é coluna de AccountingFirm (mora em Subscription) — não pode
+    # entrar no loop genérico de setattr abaixo. Trocar de plano precisa
+    # resincronizar os limites (max_companies/max_jobs_per_month) também,
+    # senão o escritório fica com o plano novo mas os limites do antigo.
+    new_plan = updates.pop("plan", None)
+    if new_plan is not None and firm.subscription is not None:
+        limits = PLAN_LIMITS[new_plan]
+        firm.subscription.plan = new_plan
+        firm.subscription.max_companies = limits["max_companies"]
+        firm.subscription.max_jobs_per_month = limits["max_jobs_per_month"]
+
+    for field, value in updates.items():
         setattr(firm, field, value)
 
     await db.commit()

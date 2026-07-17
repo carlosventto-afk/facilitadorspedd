@@ -33,6 +33,8 @@ class AccountingFirmUpdate(BaseModel):
     name: str | None = None
     email: EmailStr | None = None
     phone: str | None = None
+    plan: SubscriptionPlan | None = None
+    is_active: bool | None = None
 
 
 class AccountingFirmRead(BaseModel):
@@ -41,16 +43,7 @@ class AccountingFirmRead(BaseModel):
     cnpj: str
     email: str
     phone: str | None
-    subscription: SubscriptionRead | None
-
-    model_config = {"from_attributes": True}
-
-
-class AccountingFirmList(BaseModel):
-    id: str
-    name: str
-    cnpj: str
-    email: str
+    is_active: bool
     subscription: SubscriptionRead | None
 
     model_config = {"from_attributes": True}

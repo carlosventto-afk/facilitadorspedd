@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
+
+    # Frontend (usado para montar links absolutos em e-mails, ex. reset de senha)
+    FRONTEND_URL: str = "http://localhost:3000"
 
     # AWS S3
     AWS_ACCESS_KEY_ID: str = ""

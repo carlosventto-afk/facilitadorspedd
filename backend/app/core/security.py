@@ -41,6 +41,16 @@ def create_refresh_token(user_id: str) -> str:
     )
 
 
+def create_password_reset_token(user_id: str) -> str:
+    """Token de curta duração enviado por e-mail para autorizar a troca de
+    senha via POST /auth/reset-password."""
+    return _create_token(
+        subject=user_id,
+        expires_delta=timedelta(minutes=settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES),
+        extra={"type": "password_reset"},
+    )
+
+
 def create_download_token(job_id: str, expires_in_seconds: int) -> str:
     """Token de curta duração para autorizar GET /jobs/{id}/output-file via
     URL (ex. window.open), que não envia o header Authorization normal."""

@@ -7,15 +7,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.schemas.auth import (
     AccessTokenResponse,
     LoginRequest,
+    PasswordResetConfirm,
+    PasswordResetRequest,
     RefreshRequest,
     TokenResponse,
     UserProfile,
 )
+from app.core.config import settings
 from app.core.deps import CurrentUser
+from app.core.email import send_email
 from app.core.security import (
     create_access_token,
+    create_password_reset_token,
     create_refresh_token,
     decode_token,
+    hash_password,
     verify_password,
 )
 from app.db.models import User
@@ -91,3 +97,58 @@ async def logout(response: Response) -> dict:
 @router.get("/me", response_model=UserProfile)
 async def me(current_user: CurrentUser) -> UserProfile:
     return UserProfile.model_validate(current_user)
+
+
+@router.post("/forgot-password", status_code=status.HTTP_204_NO_CONTENT)
+async def forgot_password(
+    payload: PasswordResetRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """Envia um e-mail com link de redefinição de senha, se o e-mail existir.
+
+    Sempre retorna 204, exista ou não o e-mail — evita que a resposta seja
+    usada para descobrir quais e-mails estão cadastrados (enumeração de
+    usuário)."""
+    result = await db.execute(select(User).where(User.email == payload.email.lower()))
+    user = result.scalar_one_or_none()
+
+    if user and user.is_active:
+        token = create_password_reset_token(user.id)
+        reset_link = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+        await send_email(
+            to=user.email,
+            subject="Redefinição de senha — FacilitadorSped",
+            html_content=(
+                f"<p>Olá, {user.full_name}.</p>"
+                f"<p>Recebemos um pedido para redefinir sua senha. "
+                f"Esse link expira em {settings.PASSWORD_RESET_TOKEN_EXPIRE_MINUTES} minutos:</p>"
+                f'<p><a href="{reset_link}">{reset_link}</a></p>'
+                f"<p>Se você não pediu isso, pode ignorar este e-mail.</p>"
+            ),
+        )
+
+
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_password(
+    payload: PasswordResetConfirm,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    try:
+        data = decode_token(payload.token)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Link inválido ou expirado"
+        )
+
+    if data.get("type") != "password_reset":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Link inválido")
+
+    result = await db.execute(select(User).where(User.id == data.get("sub")))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Link inválido ou expirado"
+        )
+
+    user.password_hash = hash_password(payload.new_password)
+    await db.commit()

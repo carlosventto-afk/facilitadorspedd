@@ -29,7 +29,25 @@ export interface AccountingFirm {
   subscription: Subscription | null;
 }
 
-export interface Company {
+export interface CnpjRegistryData {
+  nome_fantasia: string | null;
+  situacao_cadastral: string | null;
+  data_abertura: string | null;
+  natureza_juridica: string | null;
+  porte: string | null;
+  cnae_principal: string | null;
+  cnae_descricao: string | null;
+  telefone: string | null;
+  email: string | null;
+  cep: string | null;
+  logradouro: string | null;
+  numero: string | null;
+  complemento: string | null;
+  bairro: string | null;
+  municipio: string | null;
+}
+
+export interface Company extends CnpjRegistryData {
   id: string;
   accounting_firm_id: string;
   name: string;
@@ -37,6 +55,20 @@ export interface Company {
   inscricao_estadual: string | null;
   uf: string;
   is_active: boolean;
+}
+
+export interface CnpjLookupResult extends CnpjRegistryData {
+  name: string;
+  uf: string;
+}
+
+export interface OperatorUser {
+  id: string;
+  email: string;
+  full_name: string;
+  role: UserRole;
+  is_active: boolean;
+  accounting_firm_id: string | null;
 }
 
 export interface ProcessingJob {

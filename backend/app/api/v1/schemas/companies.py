@@ -1,7 +1,31 @@
+from datetime import date
+
 from pydantic import BaseModel, field_validator
 
 
-class CompanyCreate(BaseModel):
+class CnpjRegistryData(BaseModel):
+    """Dados cadastrais do CNPJ (Receita Federal) — comuns entre criação,
+    atualização e leitura de empresa, e ao resultado da consulta automática
+    (ver CnpjLookupResult e GET /firms/me/cnpj/{cnpj})."""
+
+    nome_fantasia: str | None = None
+    situacao_cadastral: str | None = None
+    data_abertura: date | None = None
+    natureza_juridica: str | None = None
+    porte: str | None = None
+    cnae_principal: str | None = None
+    cnae_descricao: str | None = None
+    telefone: str | None = None
+    email: str | None = None
+    cep: str | None = None
+    logradouro: str | None = None
+    numero: str | None = None
+    complemento: str | None = None
+    bairro: str | None = None
+    municipio: str | None = None
+
+
+class CompanyCreate(CnpjRegistryData):
     name: str
     cnpj: str
     inscricao_estadual: str | None = None
@@ -21,13 +45,13 @@ class CompanyCreate(BaseModel):
         return v.upper()
 
 
-class CompanyUpdate(BaseModel):
+class CompanyUpdate(CnpjRegistryData):
     name: str | None = None
     inscricao_estadual: str | None = None
     is_active: bool | None = None
 
 
-class CompanyRead(BaseModel):
+class CompanyRead(CnpjRegistryData):
     id: str
     accounting_firm_id: str
     name: str
@@ -37,3 +61,11 @@ class CompanyRead(BaseModel):
     is_active: bool
 
     model_config = {"from_attributes": True}
+
+
+class CnpjLookupResult(CnpjRegistryData):
+    """Resultado da consulta pública de CNPJ (Receita Federal, via BrasilAPI)
+    — usado pelo frontend para pré-preencher o formulário de cadastro."""
+
+    name: str
+    uf: str

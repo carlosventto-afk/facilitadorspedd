@@ -1,12 +1,14 @@
 """Routes scoped to the authenticated Gestor's own accounting firm."""
+import logging
 from typing import Annotated
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.v1.schemas.companies import CompanyCreate, CompanyRead, CompanyUpdate
+from app.api.v1.schemas.companies import CnpjLookupResult, CompanyCreate, CompanyRead, CompanyUpdate
 from app.api.v1.schemas.firms import AccountingFirmRead, AccountingFirmUpdate, SubscriptionRead
 from app.api.v1.schemas.users import UserCreate, UserRead, UserUpdate
 from app.core.deps import GestorUser
@@ -14,7 +16,11 @@ from app.core.security import hash_password
 from app.db.models import AccountingFirm, Company, Subscription, User, UserRole
 from app.db.session import get_db
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/firms", tags=["firms"])
+
+_BRASILAPI_CNPJ_URL = "https://brasilapi.com.br/api/cnpj/v1/{cnpj}"
 
 
 async def _get_firm_with_sub(firm_id: str, db: AsyncSession) -> AccountingFirm:
@@ -78,6 +84,67 @@ async def get_my_subscription(
     if not sub:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assinatura não encontrada")
     return sub
+
+
+# ─── CNPJ Lookup ──────────────────────────────────────────────────────────────
+
+@router.get("/me/cnpj/{cnpj}", response_model=CnpjLookupResult)
+async def lookup_cnpj(cnpj: str, current_user: GestorUser) -> CnpjLookupResult:
+    """Consulta os dados cadastrais de um CNPJ na Receita Federal (via
+    BrasilAPI, pública e sem chave) — usado pelo frontend para pré-preencher
+    o formulário de cadastro de empresa a partir do CNPJ informado."""
+    digits = "".join(c for c in cnpj if c.isdigit())
+    if len(digits) != 14:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="CNPJ deve ter 14 dígitos"
+        )
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(_BRASILAPI_CNPJ_URL.format(cnpj=digits))
+        except httpx.RequestError as exc:
+            logger.warning("Falha ao consultar CNPJ %s na BrasilAPI: %s", digits, exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail="Erro ao consultar CNPJ"
+            ) from exc
+
+    if resp.status_code == 404:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CNPJ não encontrado")
+    if resp.status_code == 400:
+        # BrasilAPI usa 400 para CNPJ com dígito verificador inválido (formato
+        # correto de 14 dígitos, mas checksum não bate) — distinto de "não
+        # encontrado" (404, CNPJ válido mas fora da base da Receita).
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="CNPJ inválido")
+    if resp.status_code != 200:
+        logger.warning("BrasilAPI retornou %d para CNPJ %s", resp.status_code, digits)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Erro ao consultar CNPJ na Receita Federal",
+        )
+
+    data = resp.json()
+    telefone = data.get("ddd_telefone_1") or None
+    cnae_fiscal = data.get("cnae_fiscal")
+
+    return CnpjLookupResult(
+        name=data.get("razao_social") or "",
+        uf=data.get("uf") or "",
+        nome_fantasia=data.get("nome_fantasia") or None,
+        situacao_cadastral=data.get("descricao_situacao_cadastral"),
+        data_abertura=data.get("data_inicio_atividade"),
+        natureza_juridica=data.get("natureza_juridica"),
+        porte=data.get("porte"),
+        cnae_principal=str(cnae_fiscal) if cnae_fiscal else None,
+        cnae_descricao=data.get("cnae_fiscal_descricao"),
+        telefone=telefone,
+        email=data.get("email") or None,
+        cep=data.get("cep"),
+        logradouro=data.get("logradouro"),
+        numero=data.get("numero"),
+        complemento=data.get("complemento") or None,
+        bairro=data.get("bairro"),
+        municipio=data.get("municipio"),
+    )
 
 
 # ─── Client Companies ─────────────────────────────────────────────────────────

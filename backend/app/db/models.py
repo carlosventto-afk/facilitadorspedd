@@ -133,6 +133,24 @@ class Company(Base, TimestampMixin):
     uf: Mapped[str] = mapped_column(String(2), nullable=False, default="PA")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # Dados cadastrais do CNPJ (Receita Federal) — preenchidos manualmente ou
+    # via consulta automática (GET /firms/me/cnpj/{cnpj}, ver routes/firms.py).
+    nome_fantasia: Mapped[str | None] = mapped_column(String(255))
+    situacao_cadastral: Mapped[str | None] = mapped_column(String(50))
+    data_abertura: Mapped[date | None] = mapped_column(Date)
+    natureza_juridica: Mapped[str | None] = mapped_column(String(255))
+    porte: Mapped[str | None] = mapped_column(String(50))
+    cnae_principal: Mapped[str | None] = mapped_column(String(20))
+    cnae_descricao: Mapped[str | None] = mapped_column(String(255))
+    telefone: Mapped[str | None] = mapped_column(String(20))
+    email: Mapped[str | None] = mapped_column(String(255))
+    cep: Mapped[str | None] = mapped_column(String(10))
+    logradouro: Mapped[str | None] = mapped_column(String(255))
+    numero: Mapped[str | None] = mapped_column(String(20))
+    complemento: Mapped[str | None] = mapped_column(String(100))
+    bairro: Mapped[str | None] = mapped_column(String(100))
+    municipio: Mapped[str | None] = mapped_column(String(100))
+
     accounting_firm: Mapped["AccountingFirm"] = relationship(back_populates="companies")
     jobs: Mapped[list["ProcessingJob"]] = relationship(back_populates="company")
 

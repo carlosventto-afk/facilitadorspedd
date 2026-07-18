@@ -1,0 +1,14 @@
+# Config do serviço "celery_worker" no Railway — mesmo diretório/Dockerfile
+# do backend, mas com comando de start diferente (worker Celery, não API).
+# No Railway, crie este serviço apontando pro diretório backend/ e configure
+# "Config-as-code Path" = backend/railway.worker.toml (o padrão seria
+# backend/railway.toml, que é o do serviço da API).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "celery -A app.workers.celery_app worker --loglevel=info --concurrency=2"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

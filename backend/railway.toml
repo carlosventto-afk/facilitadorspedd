@@ -1,0 +1,16 @@
+# Config do serviço "backend" (API FastAPI) no Railway.
+# Ver docs/deploy-railway.md para o passo a passo completo de configuração
+# do projeto (Postgres/Redis, variáveis de ambiente, migration inicial).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Sem --reload — o Dockerfile já builda pra produção por padrão (CMD sem
+# --reload); esta linha só deixa explícito, caso o Railway sobrescreva.
+startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import boto3
 import pytest
 from httpx import AsyncClient
+from moto import mock_aws
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
@@ -12,6 +14,8 @@ from app.db.models import Company, User
 from tests._helpers import write_minimal_sefa_excel, write_minimal_sped
 
 from .conftest import auth_headers
+
+S3_BUCKET = "facilitador-sped-test"
 
 CHAVE_A = "35260304165376000107550010001554691944403164"
 CHAVE_B = "35260304165376000107550010009999991944403164"
@@ -100,6 +104,52 @@ async def test_fluxo_completo_upload_processar_download(
     assert r.status_code == 200
     assert b"|E116|" in r.content
     assert r.headers["content-disposition"].startswith("attachment")
+
+
+async def test_fluxo_completo_com_backend_s3(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    gestor_user: User,
+    company: Company,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mesmo fluxo de ponta a ponta do teste acima, mas com o backend S3
+    ligado (via moto — sem AWS real): upload sobe pro S3, a task baixa pra
+    processar e publica o resultado de volta no S3, e o link de download
+    devolvido é uma URL pré-assinada do S3, não a rota /output-file local."""
+    from app.workers.tasks import run_sped_processing
+
+    monkeypatch.setattr(settings, "AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setattr(settings, "AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setattr(settings, "AWS_REGION", "us-east-1")
+    monkeypatch.setattr(settings, "S3_BUCKET", S3_BUCKET)
+
+    with mock_aws():
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket=S3_BUCKET)
+
+        headers = auth_headers(gestor_user)
+        job_id = await _create_job(client, company, headers)
+        await _upload_pair(client, job_id, headers, tmp_path, company, CHAVE_A, icms=500.00)
+
+        # upload já deve ter ido pro S3, não pro disco local
+        r = await client.get(f"/jobs/{job_id}", headers=headers)
+        sped_key = f"jobs/{job_id}/sped_input.txt"
+        s3.head_object(Bucket=S3_BUCKET, Key=sped_key)  # não levanta = existe
+
+        result = await run_sped_processing(job_id, session_factory=session_factory)
+        assert result["status"] == "completed"
+
+        r = await client.get(f"/jobs/{job_id}/download", headers=headers)
+        assert r.status_code == 200
+        download_url = r.json()["url"]
+        assert S3_BUCKET in download_url
+        assert "/output-file" not in download_url  # URL pré-assinada direta, não a rota local
+
+        output_key = f"jobs/{job_id}/sped_output.txt"
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=output_key)
+        assert b"|E116|" in obj["Body"].read()
 
 
 async def test_anticipations_total_conta_tambem_os_sem_match(

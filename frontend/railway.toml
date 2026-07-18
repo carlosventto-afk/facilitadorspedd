@@ -1,0 +1,16 @@
+# Config do serviço "frontend" (Next.js) no Railway.
+# Sem "target" — o Dockerfile builda até o último estágio (runner, produção,
+# .next/standalone) por padrão. O override pra estágio "deps" (dev, com
+# node_modules completo pra rodar "npm run dev") existe só no
+# docker-compose.yml local, não aqui.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node server.js"
+healthcheckPath = "/"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5

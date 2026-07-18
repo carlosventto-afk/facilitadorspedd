@@ -83,16 +83,15 @@ async def run_sped_processing(
                 if not job.sped_input_s3_key or not job.excel_input_s3_key:
                     raise SpedProcessingError("Arquivo SPED ou planilha Excel não enviados")
 
-                sped_path = storage.local_path_for(job.sped_input_s3_key)
-                excel_path = storage.local_path_for(job.excel_input_s3_key)
-                if not sped_path.exists():
+                try:
+                    sped_path = await storage.ensure_local(job.sped_input_s3_key)
+                    excel_path = await storage.ensure_local(job.excel_input_s3_key)
+                except FileNotFoundError as exc:
+                    raise SpedProcessingError(f"Arquivo não encontrado no storage: {exc}") from exc
+                except Exception as exc:
                     raise SpedProcessingError(
-                        f"Arquivo SPED não encontrado em disco: {job.sped_input_s3_key}"
-                    )
-                if not excel_path.exists():
-                    raise SpedProcessingError(
-                        f"Planilha Excel não encontrada em disco: {job.excel_input_s3_key}"
-                    )
+                        f"Falha ao acessar arquivo no storage: {exc}"
+                    ) from exc
 
                 from app.excel.sefa_parser import parse_sefa_excel
                 from app.sped.matcher import match_anticipations
@@ -149,6 +148,11 @@ async def run_sped_processing(
                     sped_result = SpedEnricher().enrich(sped_path, output_path, index, matched)
                 except Exception as exc:
                     raise SpedProcessingError(f"Falha ao enriquecer o arquivo SPED: {exc}") from exc
+
+                try:
+                    await storage.publish_local(output_key)
+                except Exception as exc:
+                    raise SpedProcessingError(f"Falha ao publicar SPED de saída: {exc}") from exc
 
                 # AnticipationRecord: uma linha por item, matched e unmatched — dá
                 # rastreabilidade por NF, não só os totais agregados do job.

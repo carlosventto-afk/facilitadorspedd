@@ -44,6 +44,10 @@ services:
       SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
       EMAIL_FROM: ${EMAIL_FROM:-noreply@facilitadorsped.com.br}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-sa-east-1}
+      S3_BUCKET: ${S3_BUCKET:-facilitador-sped}
     ports:
       - "8000:8000"
     depends_on:
@@ -67,6 +71,10 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-production}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION:-sa-east-1}
+      S3_BUCKET: ${S3_BUCKET:-facilitador-sped}
     depends_on:
       db:
         condition: service_healthy

@@ -253,6 +253,13 @@ async def download_output(
         )
 
     expires_in = settings.S3_PRESIGNED_URL_EXPIRE_SECONDS
+
+    # Backend S3: URL pré-assinada direta do bucket, sem proxiar pela API.
+    # Backend local: cai no fluxo de sempre (token curto + rota /output-file).
+    presigned = await storage.get_presigned_url(job.sped_output_s3_key, expires_in)
+    if presigned:
+        return DownloadUrlResponse(url=presigned, expires_in_seconds=expires_in)
+
     token = create_download_token(job_id, expires_in)
     base_url = str(request.url_for("get_job_output_file", job_id=job_id))
     return DownloadUrlResponse(url=f"{base_url}?token={token}", expires_in_seconds=expires_in)

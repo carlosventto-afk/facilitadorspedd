@@ -3,5 +3,8 @@
     "allow": [
       "Bash(python -c ' *)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "chrome-devtools"
+  ]
 }

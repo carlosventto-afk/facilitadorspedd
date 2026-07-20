@@ -23,13 +23,16 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+allow_origins = {
+    "http://localhost:3000",
+    "https://facilitadorsped.com.br",
+    "https://www.facilitadorsped.com.br",
+    settings.FRONTEND_URL,
+}
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://facilitadorsped.com.br",
-        "https://www.facilitadorsped.com.br",
-    ],
+    allow_origins=sorted(allow_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

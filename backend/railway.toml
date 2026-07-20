@@ -9,7 +9,10 @@ dockerfilePath = "Dockerfile"
 [deploy]
 # Sem --reload — o Dockerfile já builda pra produção por padrão (CMD sem
 # --reload); esta linha só deixa explícito, caso o Railway sobrescreva.
-startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+# Envolto em "sh -c" porque o builder DOCKERFILE roda o startCommand em exec
+# form (sem shell) — sem isso, $PORT chega literal (string "$PORT") ao
+# uvicorn em vez do valor da variável, e o processo nunca bind a porta nenhuma.
+startCommand = "sh -c 'uvicorn app.main:app --host 0.0.0.0 --port $PORT'"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.v1.routes.admin import PLAN_LIMITS  # mesma tabela de limites por plano
 from app.api.v1.schemas.companies import (
     CnpjLookupResult,
     CompanyCreate,
@@ -16,15 +17,23 @@ from app.api.v1.schemas.companies import (
     CompanyUpdate,
     PendingCreditRead,
 )
-from app.api.v1.schemas.firms import AccountingFirmRead, AccountingFirmUpdate, SubscriptionRead
-from app.api.v1.schemas.users import UserCreate, UserRead, UserUpdate
-from app.core.deps import GestorUser
+from app.api.v1.schemas.firms import (
+    AccountingFirmRead,
+    AccountingFirmSelfCreate,
+    AccountingFirmUpdate,
+    SubscriptionRead,
+)
+from app.api.v1.schemas.users import OperatorCompanyLinksUpdate, UserCreate, UserRead, UserUpdate
+from app.core.deps import AnyAuthUser, CurrentUser, GestorUser
 from app.core.security import hash_password
 from app.db.models import (
     AccountingFirm,
     Company,
+    OperatorCompanyLink,
     PendingAntecipacaoCredit,
     Subscription,
+    SubscriptionPlan,
+    SubscriptionStatus,
     User,
     UserRole,
 )
@@ -52,6 +61,63 @@ async def _get_firm_with_sub(firm_id: str, db: AsyncSession) -> AccountingFirm:
     if not firm:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Escritório não encontrado")
     return firm
+
+
+# ─── Self-Service Firm Creation ────────────────────────────────────────────────
+
+@router.post("", response_model=AccountingFirmRead, status_code=status.HTTP_201_CREATED)
+async def create_my_firm(
+    payload: AccountingFirmSelfCreate,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> AccountingFirm:
+    """Gestor sem escritório cria o próprio — fica automaticamente vinculado
+    a ele. Não é GestorUser (que também admite ADMIN) porque essa é uma ação
+    exclusiva de quem vai efetivamente ser dono do escritório."""
+    if current_user.role != UserRole.GESTOR:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Só um Gestor pode criar um escritório",
+        )
+    if current_user.accounting_firm_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Você já pertence a um escritório"
+        )
+
+    existing = await db.execute(select(AccountingFirm).where(AccountingFirm.cnpj == payload.cnpj))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="CNPJ já cadastrado")
+
+    limits = PLAN_LIMITS[SubscriptionPlan.STARTER]
+    subscription = Subscription(
+        plan=SubscriptionPlan.STARTER,
+        status=SubscriptionStatus.TRIALING,
+        max_companies=limits["max_companies"],
+        max_jobs_per_month=limits["max_jobs_per_month"],
+    )
+    db.add(subscription)
+    await db.flush()
+
+    firm = AccountingFirm(
+        name=payload.name,
+        cnpj=payload.cnpj,
+        email=payload.email.lower(),
+        phone=payload.phone,
+        subscription_id=subscription.id,
+    )
+    db.add(firm)
+    await db.flush()
+
+    current_user.accounting_firm_id = firm.id
+    await db.commit()
+    await db.refresh(firm)
+
+    result = await db.execute(
+        select(AccountingFirm)
+        .options(selectinload(AccountingFirm.subscription))
+        .where(AccountingFirm.id == firm.id)
+    )
+    return result.scalar_one()
 
 
 # ─── Firm Profile ─────────────────────────────────────────────────────────────
@@ -187,18 +253,32 @@ async def lookup_cnpj(cnpj: str, current_user: GestorUser) -> CnpjLookupResult:
 
 @router.get("/me/companies", response_model=list[CompanyRead])
 async def list_companies(
-    current_user: GestorUser,
+    current_user: AnyAuthUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     skip: int = 0,
     limit: int = 100,
 ) -> list[Company]:
-    result = await db.execute(
-        select(Company)
-        .where(Company.accounting_firm_id == current_user.accounting_firm_id)
-        .offset(skip)
-        .limit(limit)
-        .order_by(Company.name)
-    )
+    """GESTOR/ADMIN veem todas as empresas do escritório (comportamento de
+    sempre). OPERADOR vê só as empresas às quais foi explicitamente
+    vinculado pelo Gestor (ver PUT .../users/{operator_id}/companies) —
+    antes desse vínculo existir, essa rota era GestorUser-only e um
+    Operador tomava 403 tentando abrir /processar; agora ele só vê uma
+    lista possivelmente vazia, sem erro."""
+    if current_user.role == UserRole.OPERADOR:
+        query = (
+            select(Company)
+            .join(OperatorCompanyLink, OperatorCompanyLink.company_id == Company.id)
+            .where(
+                OperatorCompanyLink.user_id == current_user.id,
+                Company.accounting_firm_id == current_user.accounting_firm_id,
+            )
+        )
+    else:
+        query = select(Company).where(
+            Company.accounting_firm_id == current_user.accounting_firm_id
+        )
+
+    result = await db.execute(query.offset(skip).limit(limit).order_by(Company.name))
     return list(result.scalars().all())
 
 
@@ -380,3 +460,84 @@ async def deactivate_operator(
 
     user.is_active = False
     await db.commit()
+
+
+async def _get_operator_for_user(operator_id: str, current_user: User, db: AsyncSession) -> User:
+    result = await db.execute(
+        select(User).where(
+            User.id == operator_id,
+            User.accounting_firm_id == current_user.accounting_firm_id,
+            User.role == UserRole.OPERADOR,
+        )
+    )
+    operator = result.scalar_one_or_none()
+    if not operator:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operador não encontrado")
+    return operator
+
+
+@router.get("/me/users/{operator_id}/companies", response_model=list[CompanyRead])
+async def list_operator_companies(
+    operator_id: str,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[Company]:
+    await _get_operator_for_user(operator_id, current_user, db)
+
+    result = await db.execute(
+        select(Company)
+        .join(OperatorCompanyLink, OperatorCompanyLink.company_id == Company.id)
+        .where(OperatorCompanyLink.user_id == operator_id)
+        .order_by(Company.name)
+    )
+    return list(result.scalars().all())
+
+
+@router.put("/me/users/{operator_id}/companies", response_model=list[CompanyRead])
+async def set_operator_companies(
+    operator_id: str,
+    payload: OperatorCompanyLinksUpdate,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[Company]:
+    """Substitui o conjunto INTEIRO de empresas vinculadas ao operador —
+    apaga os vínculos existentes e insere os novos, não é incremental."""
+    await _get_operator_for_user(operator_id, current_user, db)
+
+    if payload.company_ids:
+        owned = await db.execute(
+            select(Company.id).where(
+                Company.id.in_(payload.company_ids),
+                Company.accounting_firm_id == current_user.accounting_firm_id,
+            )
+        )
+        owned_ids = set(owned.scalars().all())
+        if owned_ids != set(payload.company_ids):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Uma ou mais empresas não pertencem ao seu escritório",
+            )
+
+    existing_links = await db.execute(
+        select(OperatorCompanyLink).where(OperatorCompanyLink.user_id == operator_id)
+    )
+    for link in existing_links.scalars().all():
+        await db.delete(link)
+    # flush explícito: sem isso, o DELETE pode não ter sido aplicado no banco
+    # ainda quando o INSERT abaixo roda no mesmo flush do commit() — se uma
+    # empresa continuar na lista nova, a UNIQUE(user_id, company_id) acusa
+    # colisão com a própria linha que está sendo substituída.
+    await db.flush()
+
+    for company_id in payload.company_ids:
+        db.add(OperatorCompanyLink(user_id=operator_id, company_id=company_id))
+
+    await db.commit()
+
+    result = await db.execute(
+        select(Company)
+        .join(OperatorCompanyLink, OperatorCompanyLink.company_id == Company.id)
+        .where(OperatorCompanyLink.user_id == operator_id)
+        .order_by(Company.name)
+    )
+    return list(result.scalars().all())

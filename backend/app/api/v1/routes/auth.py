@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
@@ -13,6 +14,7 @@ from app.api.v1.schemas.auth import (
     TokenResponse,
     UserProfile,
 )
+from app.api.v1.schemas.invitations import InvitationAccept
 from app.core.config import settings
 from app.core.deps import CurrentUser
 from app.core.email import send_email
@@ -24,7 +26,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.db.models import User
+from app.db.models import Invitation, InvitationStatus, User, UserRole
 from app.db.session import get_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -151,4 +153,51 @@ async def reset_password(
         )
 
     user.password_hash = hash_password(payload.new_password)
+    await db.commit()
+
+
+@router.post("/accept-invite", status_code=status.HTTP_204_NO_CONTENT)
+async def accept_invite(
+    payload: InvitationAccept,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    try:
+        data = decode_token(payload.token)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Link inválido ou expirado"
+        )
+
+    if data.get("type") != "invite":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Link inválido")
+
+    result = await db.execute(select(Invitation).where(Invitation.id == data.get("sub")))
+    invitation = result.scalar_one_or_none()
+    if not invitation or invitation.status != InvitationStatus.PENDING:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Link inválido ou expirado"
+        )
+
+    # Checagem defensiva: o e-mail pode ter sido cadastrado por outro caminho
+    # durante os dias de validade do convite.
+    existing_user = await db.execute(select(User).where(User.email == invitation.email))
+    if existing_user.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Este e-mail já possui uma conta"
+        )
+
+    user = User(
+        email=invitation.email,
+        password_hash=hash_password(payload.password),
+        full_name=payload.full_name,
+        role=UserRole.GESTOR,
+        accounting_firm_id=invitation.accounting_firm_id,
+    )
+    db.add(user)
+    await db.flush()
+
+    invitation.status = InvitationStatus.ACCEPTED
+    invitation.accepted_at = datetime.now(UTC)
+    invitation.created_user_id = user.id
+
     await db.commit()

@@ -1,16 +1,28 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CheckCircle2, Loader2, Mail } from "lucide-react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { toast } from "sonner";
+import { CheckCircle2, Loader2, Mail, Pencil, Power } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AccountingFirm, Company, SubscriptionPlan } from "@/types";
 import { cn } from "@/lib/utils";
+import { Modal } from "@/components/ui/Modal";
 
 function errorMessage(err: unknown, fallback: string): string {
   return (
     (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || fallback
   );
 }
+
+const editFirmSchema = z.object({
+  name: z.string().min(2, "Nome muito curto"),
+  email: z.string().email("E-mail inválido"),
+  phone: z.string().optional(),
+});
+type EditFirmForm = z.infer<typeof editFirmSchema>;
 
 const PLAN_LABELS: Record<SubscriptionPlan, string> = {
   STARTER: "Starter",
@@ -48,8 +60,12 @@ export default function AssinaturaPage() {
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
+  const editForm = useForm<EditFirmForm>({ resolver: zodResolver(editFirmSchema) });
+
+  const load = () => {
     setLoading(true);
     Promise.all([api.get("/firms/me"), api.get("/firms/me/companies")])
       .then(([firmRes, companiesRes]) => {
@@ -59,7 +75,40 @@ export default function AssinaturaPage() {
       })
       .catch((err) => setLoadError(errorMessage(err, "Erro ao carregar assinatura")))
       .finally(() => setLoading(false));
-  }, []);
+  };
+
+  useEffect(load, []);
+
+  const openEdit = () => {
+    if (!firm) return;
+    editForm.reset({ name: firm.name, email: firm.email, phone: firm.phone ?? "" });
+    setEditOpen(true);
+  };
+
+  const onEditFirm = async (data: EditFirmForm) => {
+    setSubmitting(true);
+    try {
+      await api.patch("/firms/me", { ...data, phone: data.phone || null });
+      toast.success("Escritório atualizado");
+      setEditOpen(false);
+      load();
+    } catch (err) {
+      toast.error(errorMessage(err, "Erro ao atualizar escritório"));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleFirmActive = async () => {
+    if (!firm) return;
+    try {
+      await api.patch("/firms/me", { is_active: !firm.is_active });
+      toast.success(firm.is_active ? "Escritório desativado" : "Escritório ativado");
+      load();
+    } catch (err) {
+      toast.error(errorMessage(err, "Erro ao atualizar status"));
+    }
+  };
 
   if (loading) {
     return (
@@ -92,7 +141,36 @@ export default function AssinaturaPage() {
 
       {/* Firm info */}
       <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
-        <h2 className="font-semibold text-gray-800 mb-4">Escritório</h2>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <h2 className="font-semibold text-gray-800">Escritório</h2>
+            <span
+              className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                firm?.is_active ? "text-green-700 bg-green-50" : "text-gray-500 bg-gray-100"
+              }`}
+            >
+              {firm?.is_active ? "Ativo" : "Inativo"}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={openEdit}
+              className="text-gray-400 hover:text-blue-600 transition-colors"
+              title="Editar escritório"
+            >
+              <Pencil className="w-4 h-4" />
+            </button>
+            <button
+              onClick={toggleFirmActive}
+              className={`transition-colors ${
+                firm?.is_active ? "text-gray-400 hover:text-red-600" : "text-gray-400 hover:text-green-600"
+              }`}
+              title={firm?.is_active ? "Desativar escritório" : "Ativar escritório"}
+            >
+              <Power className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div>
             <p className="text-gray-500">Razão social</p>
@@ -184,6 +262,58 @@ export default function AssinaturaPage() {
       <p className="text-xs text-gray-400 text-center">
         A alteração de plano ainda é feita manualmente pelo nosso time — em breve o self-service estará disponível aqui.
       </p>
+
+      {/* Edit modal */}
+      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="Editar escritório">
+        <form onSubmit={editForm.handleSubmit(onEditFirm)} className="space-y-4">
+          <Field label="Razão social" error={editForm.formState.errors.name?.message}>
+            <input
+              {...editForm.register("name")}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </Field>
+          <Field label="E-mail" error={editForm.formState.errors.email?.message}>
+            <input
+              {...editForm.register("email")}
+              type="email"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </Field>
+          <Field label="Telefone" error={editForm.formState.errors.phone?.message}>
+            <input
+              {...editForm.register("phone")}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Opcional"
+            />
+          </Field>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-2.5 px-4 rounded-lg transition"
+          >
+            {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+            Salvar alterações
+          </button>
+        </form>
+      </Modal>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  error,
+  children,
+}: {
+  label: string;
+  error?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label className="block text-sm font-medium text-gray-700 mb-1">{label}</label>
+      {children}
+      {error && <p className="text-red-500 text-xs mt-1">{error}</p>}
     </div>
   );
 }

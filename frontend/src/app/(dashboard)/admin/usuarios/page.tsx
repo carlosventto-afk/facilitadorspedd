@@ -24,8 +24,10 @@ const createSchema = z
     role: z.enum(["ADMIN", "GESTOR", "OPERADOR"]),
     accounting_firm_id: z.string().optional(),
   })
-  .refine((data) => data.role === "ADMIN" || !!data.accounting_firm_id, {
-    message: "Escritório obrigatório para Gestor/Operador",
+  .refine((data) => data.role !== "OPERADOR" || !!data.accounting_firm_id, {
+    // Gestor pode ser cadastrado sem escritório — ele cria o dele depois
+    // (ver /onboarding-escritorio). Operador não faz sentido sem escritório.
+    message: "Escritório obrigatório para Operador",
     path: ["accounting_firm_id"],
   });
 type CreateForm = z.infer<typeof createSchema>;

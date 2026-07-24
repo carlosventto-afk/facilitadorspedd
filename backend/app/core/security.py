@@ -51,6 +51,18 @@ def create_password_reset_token(user_id: str) -> str:
     )
 
 
+def create_invite_token(invitation_id: str) -> str:
+    """Token de longa duração enviado por e-mail para autorizar o cadastro do
+    usuário convidado via POST /auth/accept-invite. O subject é o id de um
+    Invitation, não de um User — o usuário ainda não existe nesse ponto
+    (mesmo precedente de create_download_token, cujo subject é um job_id)."""
+    return _create_token(
+        subject=invitation_id,
+        expires_delta=timedelta(days=settings.INVITE_TOKEN_EXPIRE_DAYS),
+        extra={"type": "invite"},
+    )
+
+
 def create_download_token(job_id: str, expires_in_seconds: int) -> str:
     """Token de curta duração para autorizar GET /jobs/{id}/output-file via
     URL (ex. window.open), que não envia o header Authorization normal."""

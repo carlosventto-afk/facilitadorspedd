@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 30
+    INVITE_TOKEN_EXPIRE_DAYS: int = 7
 
     # Frontend (usado para montar links absolutos em e-mails, ex. reset de senha)
     FRONTEND_URL: str = "http://localhost:3000"

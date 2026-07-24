@@ -3,6 +3,7 @@ export type SubscriptionPlan = "STARTER" | "PROFESSIONAL" | "ENTERPRISE";
 export type SubscriptionStatus = "TRIALING" | "ACTIVE" | "PAST_DUE" | "CANCELED";
 export type JobStatus = "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
 export type TipoAntecipacao = "NORMAL" | "ESPECIAL" | "CESTA_BASICA";
+export type InvitationStatus = "PENDING" | "ACCEPTED" | "CANCELED";
 
 export interface UserProfile {
   id: string;
@@ -68,6 +69,17 @@ export interface Company extends CnpjRegistryData {
 export interface CnpjLookupResult extends CnpjRegistryData {
   name: string;
   uf: string;
+}
+
+export interface Invitation {
+  id: string;
+  email: string;
+  accounting_firm_id: string;
+  status: InvitationStatus;
+  invited_by: string | null;
+  accepted_at: string | null;
+  created_user_id: string | null;
+  created_at: string;
 }
 
 export interface OperatorUser {

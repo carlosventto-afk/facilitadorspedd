@@ -25,3 +25,10 @@ class UserRead(BaseModel):
     accounting_firm_id: str | None
 
     model_config = {"from_attributes": True}
+
+
+class OperatorCompanyLinksUpdate(BaseModel):
+    """Substitui o conjunto INTEIRO de empresas vinculadas a um Operador —
+    não é incremental (ver PUT /firms/me/users/{operator_id}/companies)."""
+
+    company_ids: list[str]

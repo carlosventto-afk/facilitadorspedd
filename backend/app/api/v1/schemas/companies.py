@@ -54,6 +54,15 @@ class CompanyUpdate(CnpjRegistryData):
     is_active: bool | None = None
 
 
+class AdminCompanyCreate(CompanyCreate):
+    """Igual a CompanyCreate, mas com o escritório explícito — usado só por
+    POST /admin/companies. No fluxo do Gestor (POST /firms/me/companies) o
+    escritório é implícito do usuário logado; o Admin opera cross-firm, então
+    precisa escolher pra qual escritório a empresa vai."""
+
+    accounting_firm_id: str
+
+
 class CompanyRead(CnpjRegistryData):
     id: str
     accounting_firm_id: str

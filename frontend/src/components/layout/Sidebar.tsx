@@ -8,6 +8,7 @@ import {
   Home,
   LayoutDashboard,
   LogOut,
+  Mail,
   Settings,
   Upload,
   Users,
@@ -28,6 +29,8 @@ const navItems = [
 const adminNavItems = [
   { href: "/admin", label: "Painel Admin", icon: LayoutDashboard, exact: true },
   { href: "/admin/escritorios", label: "Escritórios", icon: Building2 },
+  { href: "/admin/empresas", label: "Empresas", icon: Building2 },
+  { href: "/admin/convites", label: "Convites", icon: Mail },
   { href: "/admin/usuarios", label: "Usuários", icon: Users },
 ];
 

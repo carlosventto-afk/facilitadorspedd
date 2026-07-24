@@ -5,9 +5,9 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Loader2, Pencil, Plus, Power, Users } from "lucide-react";
+import { Link2, Loader2, Pencil, Plus, Power, Users } from "lucide-react";
 import { api } from "@/lib/api";
-import type { OperatorUser } from "@/types";
+import type { Company, OperatorUser } from "@/types";
 import { Modal } from "@/components/ui/Modal";
 
 const createSchema = z.object({
@@ -30,18 +30,22 @@ function errorMessage(err: unknown, fallback: string): string {
 
 export default function UsuariosPage() {
   const [users, setUsers] = useState<OperatorUser[]>([]);
+  const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<OperatorUser | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [linkingUser, setLinkingUser] = useState<OperatorUser | null>(null);
+  const [selectedCompanyIds, setSelectedCompanyIds] = useState<Set<string>>(new Set());
+  const [linksLoading, setLinksLoading] = useState(false);
 
   const load = () => {
     setLoading(true);
-    api
-      .get("/firms/me/users")
-      .then((r) => {
-        setUsers(r.data);
+    Promise.all([api.get("/firms/me/users"), api.get("/firms/me/companies")])
+      .then(([usersRes, companiesRes]) => {
+        setUsers(usersRes.data);
+        setCompanies(companiesRes.data);
         setLoadError(null);
       })
       .catch((err) => setLoadError(errorMessage(err, "Erro ao carregar usuários")))
@@ -95,6 +99,48 @@ export default function UsuariosPage() {
       load();
     } catch (err) {
       toast.error(errorMessage(err, "Erro ao atualizar status"));
+    }
+  };
+
+  const openLinks = async (user: OperatorUser) => {
+    setLinkingUser(user);
+    setLinksLoading(true);
+    try {
+      const { data } = await api.get<Company[]>(`/firms/me/users/${user.id}/companies`);
+      setSelectedCompanyIds(new Set(data.map((c) => c.id)));
+    } catch (err) {
+      toast.error(errorMessage(err, "Erro ao carregar vínculos"));
+      setSelectedCompanyIds(new Set());
+    } finally {
+      setLinksLoading(false);
+    }
+  };
+
+  const toggleCompanySelection = (companyId: string) => {
+    setSelectedCompanyIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(companyId)) {
+        next.delete(companyId);
+      } else {
+        next.add(companyId);
+      }
+      return next;
+    });
+  };
+
+  const onSaveLinks = async () => {
+    if (!linkingUser) return;
+    setSubmitting(true);
+    try {
+      await api.put(`/firms/me/users/${linkingUser.id}/companies`, {
+        company_ids: Array.from(selectedCompanyIds),
+      });
+      toast.success("Vínculos atualizados");
+      setLinkingUser(null);
+    } catch (err) {
+      toast.error(errorMessage(err, "Erro ao atualizar vínculos"));
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -154,6 +200,13 @@ export default function UsuariosPage() {
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex items-center justify-end gap-3">
+                      <button
+                        onClick={() => openLinks(u)}
+                        className="text-gray-400 hover:text-indigo-600 transition-colors"
+                        title="Empresas vinculadas"
+                      >
+                        <Link2 className="w-4 h-4" />
+                      </button>
                       <button
                         onClick={() => openEdit(u)}
                         className="text-gray-400 hover:text-blue-600 transition-colors"
@@ -234,6 +287,50 @@ export default function UsuariosPage() {
             Salvar alterações
           </button>
         </form>
+      </Modal>
+
+      {/* Links modal */}
+      <Modal
+        open={!!linkingUser}
+        onClose={() => setLinkingUser(null)}
+        title={`Empresas de ${linkingUser?.full_name ?? ""}`}
+      >
+        {linksLoading ? (
+          <div className="flex items-center justify-center py-8 text-gray-400">
+            <Loader2 className="w-5 h-5 animate-spin" />
+          </div>
+        ) : companies.length === 0 ? (
+          <p className="text-sm text-gray-500 text-center py-4">
+            Nenhuma empresa cadastrada ainda — cadastre em Empresas primeiro.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-500">
+              Marque as empresas que este operador pode processar.
+            </p>
+            <div className="max-h-64 overflow-y-auto space-y-2 border border-gray-200 rounded-lg p-3">
+              {companies.map((c) => (
+                <label key={c.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedCompanyIds.has(c.id)}
+                    onChange={() => toggleCompanySelection(c.id)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  {c.name}
+                </label>
+              ))}
+            </div>
+            <button
+              onClick={onSaveLinks}
+              disabled={submitting}
+              className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium py-2.5 px-4 rounded-lg transition"
+            >
+              {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+              Salvar vínculos
+            </button>
+          </div>
+        )}
       </Modal>
     </div>
   );

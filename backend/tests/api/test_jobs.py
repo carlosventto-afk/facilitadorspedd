@@ -12,7 +12,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
-from app.db.models import Company, CreditStatus, PendingAntecipacaoCredit, User
+from app.core.security import hash_password
+from app.db.models import (
+    AccountingFirm,
+    Company,
+    CreditStatus,
+    OperatorCompanyLink,
+    PendingAntecipacaoCredit,
+    User,
+    UserRole,
+)
 from tests._helpers import write_minimal_sefa_excel, write_minimal_sped
 
 from .conftest import auth_headers
@@ -556,3 +565,59 @@ async def test_sped_malformado_falha_sem_retry(
     data = r.json()
     assert data["status"] == "FAILED"
     assert data["error_message"]
+
+
+# ── Isolamento de Operador por vínculo de empresa ───────────────────────────
+
+async def test_operador_cria_job_so_para_empresa_vinculada(
+    client: AsyncClient, db: AsyncSession, accounting_firm: AccountingFirm, company: Company,
+) -> None:
+    operador = User(
+        email="operador.jobs@teste.com.br",
+        password_hash=hash_password("Senha@123"),
+        full_name="Operador Teste",
+        role=UserRole.OPERADOR,
+        accounting_firm_id=accounting_firm.id,
+    )
+    db.add(operador)
+    empresa_nao_vinculada = Company(
+        accounting_firm_id=accounting_firm.id, name="Não Vinculada", cnpj="66554433000111",
+        uf="PA",
+    )
+    db.add(empresa_nao_vinculada)
+    await db.commit()
+    await db.refresh(operador)
+    await db.refresh(empresa_nao_vinculada)
+
+    db.add(OperatorCompanyLink(user_id=operador.id, company_id=company.id))
+    await db.commit()
+
+    headers = auth_headers(operador)
+
+    r_ok = await client.post(
+        f"/companies/{company.id}/jobs",
+        json={"period_start": "2026-06-01", "period_end": "2026-06-30"},
+        headers=headers,
+    )
+    assert r_ok.status_code == 201, r_ok.text
+
+    r_bloqueado = await client.post(
+        f"/companies/{empresa_nao_vinculada.id}/jobs",
+        json={"period_start": "2026-06-01", "period_end": "2026-06-30"},
+        headers=headers,
+    )
+    assert r_bloqueado.status_code == 404
+
+
+async def test_gestor_continua_sem_precisar_de_vinculo(
+    client: AsyncClient, company: Company, gestor_user: User,
+) -> None:
+    """Regressão: a restrição por vínculo é só pra OPERADOR — GESTOR continua
+    acessando qualquer empresa do escritório sem nenhum vínculo explícito
+    (comportamento idêntico ao de antes desta mudança)."""
+    r_gestor = await client.post(
+        f"/companies/{company.id}/jobs",
+        json={"period_start": "2026-06-01", "period_end": "2026-06-30"},
+        headers=auth_headers(gestor_user),
+    )
+    assert r_gestor.status_code == 201, r_gestor.text

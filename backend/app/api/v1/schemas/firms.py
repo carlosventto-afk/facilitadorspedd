@@ -13,12 +13,11 @@ class SubscriptionRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class AccountingFirmCreate(BaseModel):
+class _AccountingFirmCreateBase(BaseModel):
     name: str
     cnpj: str
     email: EmailStr
     phone: str | None = None
-    plan: SubscriptionPlan = SubscriptionPlan.STARTER
 
     @field_validator("cnpj")
     @classmethod
@@ -27,6 +26,17 @@ class AccountingFirmCreate(BaseModel):
         if len(digits) != 14:
             raise ValueError("CNPJ deve ter 14 dígitos")
         return digits
+
+
+class AccountingFirmCreate(_AccountingFirmCreateBase):
+    plan: SubscriptionPlan = SubscriptionPlan.STARTER
+
+
+class AccountingFirmSelfCreate(_AccountingFirmCreateBase):
+    """Igual a AccountingFirmCreate, mas sem `plan` — usado só por POST /firms
+    (Gestor criando o próprio escritório): sempre STARTER/TRIALING no código,
+    sem seletor de plano no self-service (mesma decisão de produto já usada
+    em /assinatura — mudança de plano é manual)."""
 
 
 class AccountingFirmUpdate(BaseModel):

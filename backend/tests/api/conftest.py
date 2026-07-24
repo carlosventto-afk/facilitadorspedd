@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.config import settings
 from app.core.security import create_access_token, hash_password
 from app.db.base import Base
-from app.db.models import AccountingFirm, Company, User, UserRole
+from app.db.models import AccountingFirm, Company, Invitation, User, UserRole
 from app.db.session import get_db
 from app.main import app
 
@@ -121,6 +121,21 @@ async def company(db: AsyncSession, accounting_firm: AccountingFirm) -> Company:
     await db.commit()
     await db.refresh(comp)
     return comp
+
+
+@pytest_asyncio.fixture
+async def pending_invitation(
+    db: AsyncSession, accounting_firm: AccountingFirm, admin_user: User,
+) -> Invitation:
+    invitation = Invitation(
+        email="convidado@teste.com.br",
+        accounting_firm_id=accounting_firm.id,
+        invited_by=admin_user.id,
+    )
+    db.add(invitation)
+    await db.commit()
+    await db.refresh(invitation)
+    return invitation
 
 
 def auth_headers(user: User) -> dict[str, str]:

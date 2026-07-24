@@ -16,9 +16,19 @@ export default function DashboardPage() {
       setUser(r.data);
       if (r.data.role === "ADMIN") {
         router.replace("/admin");
+        return;
       }
+      api
+        .get("/firms/me")
+        .then((fr) => setFirm(fr.data))
+        .catch((err) => {
+          // Gestor sem escritório ainda (ex. cadastrado direto pelo Admin
+          // sem escolher um) — cria o dele antes de usar o resto do painel.
+          if (r.data.role === "GESTOR" && err?.response?.status === 404) {
+            router.replace("/onboarding-escritorio");
+          }
+        });
     });
-    api.get("/firms/me").then((r) => setFirm(r.data)).catch(() => null);
   }, [router]);
 
   const planLabels: Record<string, string> = {

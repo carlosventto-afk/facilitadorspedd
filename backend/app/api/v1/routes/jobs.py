@@ -14,7 +14,16 @@ from app.core.config import settings
 from app.core.deps import AnyAuthUser
 from app.core.security import create_download_token, decode_token
 from app.core.storage import StorageQuotaExceededError
-from app.db.models import Company, JobLog, JobStatus, LogLevel, ProcessingJob, User
+from app.db.models import (
+    Company,
+    JobLog,
+    JobStatus,
+    LogLevel,
+    OperatorCompanyLink,
+    ProcessingJob,
+    User,
+    UserRole,
+)
 from app.db.session import get_db
 
 router = APIRouter(tags=["jobs"])
@@ -31,13 +40,19 @@ _optional_bearer = HTTPBearer(auto_error=False)
 
 
 async def _get_company_for_user(company_id: str, user, db: AsyncSession) -> Company:
-    """Return company if it belongs to the user's accounting firm."""
-    result = await db.execute(
-        select(Company).where(
-            Company.id == company_id,
-            Company.accounting_firm_id == user.accounting_firm_id,
-        )
-    )
+    """Return company if it belongs to the user's accounting firm — e, se o
+    usuário for OPERADOR, só se ele também estiver explicitamente vinculado
+    a essa empresa (ver OperatorCompanyLink). ADMIN/GESTOR continuam vendo
+    qualquer empresa do escritório, sem mudança de comportamento."""
+    query = select(Company).where(Company.id == company_id)
+    if user.role == UserRole.OPERADOR:
+        query = query.join(
+            OperatorCompanyLink, OperatorCompanyLink.company_id == Company.id
+        ).where(OperatorCompanyLink.user_id == user.id)
+    else:
+        query = query.where(Company.accounting_firm_id == user.accounting_firm_id)
+
+    result = await db.execute(query)
     company = result.scalar_one_or_none()
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empresa não encontrada")
@@ -45,14 +60,15 @@ async def _get_company_for_user(company_id: str, user, db: AsyncSession) -> Comp
 
 
 async def _get_job_for_user(job_id: str, user, db: AsyncSession) -> ProcessingJob:
-    result = await db.execute(
-        select(ProcessingJob)
-        .join(Company)
-        .where(
-            ProcessingJob.id == job_id,
-            Company.accounting_firm_id == user.accounting_firm_id,
-        )
-    )
+    query = select(ProcessingJob).join(Company).where(ProcessingJob.id == job_id)
+    if user.role == UserRole.OPERADOR:
+        query = query.join(
+            OperatorCompanyLink, OperatorCompanyLink.company_id == Company.id
+        ).where(OperatorCompanyLink.user_id == user.id)
+    else:
+        query = query.where(Company.accounting_firm_id == user.accounting_firm_id)
+
+    result = await db.execute(query)
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job não encontrado")

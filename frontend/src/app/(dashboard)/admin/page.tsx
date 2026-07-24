@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { AdminStats } from "@/types";
-import { Building2, CheckCircle2, FileText, Loader2, Users, XCircle } from "lucide-react";
+import { Building2, CheckCircle2, FileText, Loader2, Mail, Users, XCircle } from "lucide-react";
 
 function errorMessage(err: unknown, fallback: string): string {
   return (
@@ -66,13 +66,27 @@ export default function AdminDashboardPage() {
         )
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <QuickAction
           href="/admin/escritorios"
           icon={<Building2 className="w-6 h-6 text-indigo-600" />}
           title="Escritórios"
           desc="Gerenciar escritórios contábeis e assinaturas"
           color="bg-indigo-50"
+        />
+        <QuickAction
+          href="/admin/empresas"
+          icon={<Building2 className="w-6 h-6 text-teal-600" />}
+          title="Empresas"
+          desc="Empresas clientes de todos os escritórios"
+          color="bg-teal-50"
+        />
+        <QuickAction
+          href="/admin/convites"
+          icon={<Mail className="w-6 h-6 text-amber-600" />}
+          title="Convites"
+          desc="Convidar Gestores para escritórios por e-mail"
+          color="bg-amber-50"
         />
         <QuickAction
           href="/admin/usuarios"

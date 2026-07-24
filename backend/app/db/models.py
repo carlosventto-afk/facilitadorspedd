@@ -63,6 +63,12 @@ class CreditStatus(str, enum.Enum):
     CLAIMED = "CLAIMED"
 
 
+class InvitationStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    CANCELED = "CANCELED"
+
+
 # ─── Subscription ────────────────────────────────────────────────────────────
 
 class Subscription(Base, TimestampMixin):
@@ -102,6 +108,7 @@ class AccountingFirm(Base, TimestampMixin):
     subscription: Mapped["Subscription | None"] = relationship(back_populates="accounting_firm")
     users: Mapped[list["User"]] = relationship(back_populates="accounting_firm")
     companies: Mapped[list["Company"]] = relationship(back_populates="accounting_firm")
+    invitations: Mapped[list["Invitation"]] = relationship(back_populates="accounting_firm")
 
 
 # ─── User ─────────────────────────────────────────────────────────────────────
@@ -121,6 +128,42 @@ class User(Base, TimestampMixin):
 
     accounting_firm: Mapped["AccountingFirm | None"] = relationship(back_populates="users")
     created_jobs: Mapped[list["ProcessingJob"]] = relationship(back_populates="created_by_user")
+
+
+# ─── Invitation (convite de Gestor por e-mail) ────────────────────────────────
+
+class Invitation(Base, TimestampMixin):
+    """Convite pendente pra alguém virar GESTOR de um escritório específico.
+
+    O User real só é criado quando o convite é aceito (POST /auth/accept-invite)
+    — antes disso, não existe nenhuma linha em `users` pra essa pessoa. Mesmo
+    padrão de estado-pendente-entre-dois-pontos-no-tempo já usado em
+    PendingAntecipacaoCredit (created_user_id aqui é o equivalente de
+    claimed_in_job_id lá: nulo até o convite resolver, preenchido no aceite).
+    """
+    __tablename__ = "invitations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    # Sem unique=True: a unicidade que importa é condicional ("só 1 PENDING
+    # por vez" pro mesmo e-mail), não pode ser expressa como constraint de
+    # coluna simples — é validada na rota (POST /admin/invitations).
+    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    accounting_firm_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("accounting_firms.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    status: Mapped[InvitationStatus] = mapped_column(
+        Enum(InvitationStatus), nullable=False, default=InvitationStatus.PENDING
+    )
+    invited_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL")
+    )
+
+    accounting_firm: Mapped["AccountingFirm"] = relationship(back_populates="invitations")
 
 
 # ─── Company (client of accounting firm) ─────────────────────────────────────
@@ -161,6 +204,29 @@ class Company(Base, TimestampMixin):
     jobs: Mapped[list["ProcessingJob"]] = relationship(back_populates="company")
     pending_credits: Mapped[list["PendingAntecipacaoCredit"]] = relationship(
         back_populates="company"
+    )
+
+
+# ─── Operator ↔ Company Link (quais empresas um Operador pode processar) ──────
+
+class OperatorCompanyLink(Base):
+    """Vínculo explícito entre um usuário OPERADOR e uma Company que ele pode
+    processar jobs — só o GESTOR do escritório define esses vínculos
+    (PUT /firms/me/users/{operator_id}/companies, substitui o conjunto
+    inteiro). Sem TimestampMixin completo (só created_at): é uma linha de
+    associação pura, não uma entidade que muda de estado como as outras."""
+    __tablename__ = "operator_company_links"
+    __table_args__ = (UniqueConstraint("user_id", "company_id", name="uq_operator_company"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    company_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

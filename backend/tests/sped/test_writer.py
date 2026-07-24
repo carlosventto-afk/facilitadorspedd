@@ -160,7 +160,13 @@ def test_normal_inserts_e116(tmp_path: Path) -> None:
 
 # ── ESPECIAL ─────────────────────────────────────────────────────────────────
 
-def test_especial_inserts_c195_c197_and_e111(tmp_path: Path) -> None:
+def test_especial_inserts_c195_c197_no_e111_same_period(tmp_path: Path) -> None:
+    """ESPECIAL sempre lança o débito (C195/C197/E116) no período do match —
+    mas NÃO o E111 (crédito) neste mesmo arquivo: orientação SEFA-PA 1173 §2
+    diz que o crédito só pode ser apropriado no mês SEGUINTE. Sem
+    `credit_to_claim` explícito (default 0), nenhum E111 é escrito; o total
+    ESPECIAL deste período fica só em `result.especial_total`, pro chamador
+    (tasks.py) persistir como crédito pendente."""
     sped = _write_sped(tmp_path, BASE_SPED)
     out = tmp_path / "out.txt"
     index = SpedParser().parse(sped)
@@ -178,15 +184,35 @@ def test_especial_inserts_c195_c197_and_e111(tmp_path: Path) -> None:
     assert c197s[0][2] == "PA70000008"
     assert c197s[0][7] == "500,00"  # VL_ICMS — campo que o PVA soma para o DEB_ESP (não VL_BC_ICMS/campo 5)
 
-    e111s = _find_records(records, "E111")
-    assert len(e111s) == 1
-    assert e111s[0][2] == "PA020008"
-    assert e111s[0][4] == "500,00"
+    assert not _find_records(records, "E111")
+    assert result.e111_inserted == 0
+    assert result.especial_total == parse_decimal("500,00")
 
     e116s = _find_records(records, "E116")
     assert e116s[0][5] == "1173"   # COD_REC para ESPECIAL
 
+
+def test_credit_to_claim_inserts_e111(tmp_path: Path) -> None:
+    """`credit_to_claim` (crédito de um período ANTERIOR desta empresa, já
+    apurado e persistido pelo chamador) é o que vira E111 — independente do
+    total ESPECIAL deste período. Aqui o período atual não tem ESPECIAL
+    nenhum no match (só NORMAL), mas ainda assim lança o E111 do crédito
+    pendente que está sendo reivindicado agora."""
+    sped = _write_sped(tmp_path, BASE_SPED)
+    out = tmp_path / "out.txt"
+    index = SpedParser().parse(sped)
+    matched, _ = match_anticipations(index, [_make_antecipacao("NORMAL")])
+    result = SpedEnricher().enrich(
+        sped, out, index, matched, credit_to_claim=parse_decimal("742,10")
+    )
+
+    records = _read_records(out)
+    e111s = _find_records(records, "E111")
+    assert len(e111s) == 1
+    assert e111s[0][2] == "PA020008"
+    assert e111s[0][4] == "742,10"
     assert result.e111_inserted == 1
+    assert result.especial_total == Decimal("0")   # nada ESPECIAL neste período
 
 
 # ── CESTA_BASICA ─────────────────────────────────────────────────────────────
@@ -303,9 +329,13 @@ def test_e111_e116_antigos_removidos_e_relancados_do_zero(tmp_path: Path) -> Non
     """Regressão do caso real (LUMIERE): havia E111 PA020008 (R$2.340,37) e
     E116 (R$1.855,99, COD_REC 1173) pré-existentes no SPED, refletidos no E110
     (campo 8 e DEB_ESP). Em vez de acumular a planilha em cima deles, o motor
-    descarta os dois e relança do zero — só o total da planilha atual deve
-    sobrar no arquivo final, não a soma com o que já estava lá (isso é o que
-    causava a divergência 'soma E116 ≠ planilha' que o usuário reportou)."""
+    descarta os dois e relança do zero — só o total atual (credit_to_claim
+    pro E111/campo 8, matched pro E116) deve sobrar no arquivo final, não a
+    soma com o que já estava lá (isso é o que causava a divergência 'soma
+    E116 ≠ planilha' que o usuário reportou). credit_to_claim=500,00 aqui só
+    pra exercitar o mesmo mecanismo de substituição do campo 8 — não precisa
+    ter relação com o total ESPECIAL do match (E116/DEB_ESP), que agora é
+    reportado separadamente."""
     e110_baseline = "|E110|0,00|0,00|0,00|0,00|0,00|0,00|2340,37|0,00|0,00|0,00|0,00|0,00|0,00|1855,99|\n"
     sped_with_e = (
         BASE_SPED
@@ -321,7 +351,7 @@ def test_e111_e116_antigos_removidos_e_relancados_do_zero(tmp_path: Path) -> Non
     out = tmp_path / "out.txt"
     index = SpedParser().parse(sped)
     matched, _ = match_anticipations(index, [_make_antecipacao("ESPECIAL", valor="500,00")])
-    SpedEnricher().enrich(sped, out, index, matched)
+    SpedEnricher().enrich(sped, out, index, matched, credit_to_claim=parse_decimal("500,00"))
 
     records = _read_records(out)
     e111s = _find_records(records, "E111")
@@ -418,13 +448,16 @@ def test_9999_total_updated(tmp_path: Path) -> None:
 # ── E110 — atualização por tipo ──────────────────────────────────────────────
 
 def test_especial_updates_e110_vl_tot_aj_creditos_and_deb_esp(tmp_path: Path) -> None:
-    """ESPECIAL deve atualizar VL_TOT_AJ_CREDITOS (crédito via E111) E DEB_ESP
-    (contraponto do E116 na apuração), e reapurar VL_SLD_CREDOR_TRANSPORTAR."""
+    """VL_TOT_AJ_CREDITOS (crédito via E111) reflete credit_to_claim (crédito
+    de período anterior sendo reivindicado agora); DEB_ESP (contraponto do
+    E116 na apuração) reflete o total ESPECIAL do match deste período — são
+    independentes desde a mudança de timing do crédito (SEFA-PA 1173 §2).
+    Aqui os dois coincidem (500,00) só por simplicidade do teste."""
     sped = _write_sped(tmp_path, BASE_SPED)
     out = tmp_path / "out.txt"
     index = SpedParser().parse(sped)
     matched, _ = match_anticipations(index, [_make_antecipacao("ESPECIAL")])
-    SpedEnricher().enrich(sped, out, index, matched)
+    SpedEnricher().enrich(sped, out, index, matched, credit_to_claim=parse_decimal("500,00"))
 
     records = _read_records(out)
     e110s = _find_records(records, "E110")
@@ -451,7 +484,11 @@ def test_e110_reapuracao_cenario_credor_caso_real(tmp_path: Path) -> None:
     out = tmp_path / "out.txt"
     index = SpedParser().parse(sped)
     matched, _ = match_anticipations(index, [_make_antecipacao("ESPECIAL", valor="1387,93")])
-    SpedEnricher().enrich(sped, out, index, matched)
+    result = SpedEnricher().enrich(
+        sped, out, index, matched, credit_to_claim=parse_decimal("1387,93")
+    )
+    # débito deste período, vira crédito pendente (não é o que virou E111 aqui)
+    assert result.especial_total == parse_decimal("1387,93")
 
     records = _read_records(out)
     e110s = _find_records(records, "E110")
@@ -473,7 +510,7 @@ def test_e110_reapuracao_cenario_devedor(tmp_path: Path) -> None:
     out = tmp_path / "out.txt"
     index = SpedParser().parse(sped)
     matched, _ = match_anticipations(index, [_make_antecipacao("ESPECIAL", valor="200,00")])
-    SpedEnricher().enrich(sped, out, index, matched)
+    SpedEnricher().enrich(sped, out, index, matched, credit_to_claim=parse_decimal("200,00"))
 
     records = _read_records(out)
     e110s = _find_records(records, "E110")

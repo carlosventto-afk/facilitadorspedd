@@ -8,10 +8,19 @@ relançado do zero a partir da planilha — não há reconciliação/acúmulo co
 que já estava no arquivo.
 
 Injeta registros C197 após blocos C100 correspondentes, atualiza E110
-(VL_TOT_AJ_CREDITOS para ESPECIAL; DEB_ESP para todos os tipos, pois todos
-geram E116) e reapura o saldo (VL_SLD_APURADO / VL_ICMS_RECOLHER /
-VL_SLD_CREDOR_TRANSPORTAR), insere E111 para ESPECIAL, insere E116 e adiciona
-registros 0460 ao bloco 0.
+(VL_TOT_AJ_CREDITOS para o crédito ESPECIAL reivindicado; DEB_ESP para todos
+os tipos, pois todos geram E116) e reapura o saldo (VL_SLD_APURADO /
+VL_ICMS_RECOLHER / VL_SLD_CREDOR_TRANSPORTAR), insere E111 quando há crédito
+a reivindicar, insere E116 e adiciona registros 0460 ao bloco 0.
+
+Timing do crédito ESPECIAL (orientação SEFA-PA 1173 §2): o débito especial
+(C197/E116/DEB_ESP) é lançado no mês de entrada, mas o crédito (E111) só
+pode ser apropriado no mês SEGUINTE. Por isso `enrich()` recebe
+`credit_to_claim` (crédito apurado num período anterior, gerenciado pelo
+chamador) em vez de calcular e lançar o E111 a partir do próprio
+`matched` deste período — o total ESPECIAL deste período apurado aqui
+(`ProcessingResult.especial_total`) é devolvido pro chamador persistir como
+crédito pendente, não lançado neste arquivo.
 
 Atualiza registros de fechamento (0990, C990, E990, 9999) e contagens
 por tipo de registro no bloco 9 (9900).
@@ -237,7 +246,16 @@ class SpedEnricher:
         output_path: Path,
         index: SpedIndex,
         matched: list[MatchedAnticipation],
+        credit_to_claim: Decimal = Decimal("0"),
     ) -> ProcessingResult:
+        """
+        `credit_to_claim`: crédito ESPECIAL de um período ANTERIOR desta
+        empresa, já apurado e à espera de apropriação (ver módulo docstring)
+        — é isso que vira o E111/E110.campo8 deste arquivo, não o total
+        ESPECIAL de `matched` (que é o débito deste período, disponível em
+        `ProcessingResult.especial_total` pro chamador persistir como novo
+        crédito pendente).
+        """
         result = ProcessingResult(
             anticipations_total=len(matched),
             anticipations_matched=len(matched),
@@ -259,14 +277,15 @@ class SpedEnricher:
                 (_build_c195(m), _build_c197(m))
             )
 
-        # ESPECIAL → também credita E111 PA020008 → E110.VL_TOT_AJ_CREDITOS (outros créditos).
-        # A planilha SEFA-PA é a única fonte de verdade: qualquer C197/E111/E116
-        # de antecipação pré-existente (index.antecipacao_strip_lines, calculado
-        # no parser.py) é descartado no streaming abaixo e substituído do zero
-        # pelo que está sendo calculado aqui — não se acumula com o que havia.
+        # ESPECIAL deste período → débito especial (C197/E116/DEB_ESP, lançado
+        # abaixo) já apurado neste job. NÃO vira E111 neste mesmo arquivo — o
+        # crédito correspondente só pode ser lançado no mês seguinte (ver
+        # docstring do módulo); devolvido em result.especial_total pro
+        # chamador persistir como crédito pendente.
         especial_total: Decimal = sum(
             m.valor_icms for m in matched if m.codigo_ajuste_e111
         )
+        result.especial_total = especial_total
 
         # Todos os tipos (NORMAL + ESPECIAL + CESTA_BASICA) → E110.DEB_ESP:
         # todos geram E116 (obrigação de recolhimento), e o PVA exige que
@@ -300,10 +319,12 @@ class SpedEnricher:
             and code not in codes_used_by_new_c195
         }
 
-        # Deltas do E110: (novo total da planilha) − (total antigo de antecipação
-        # que está sendo removido) — substituição, não acúmulo. Podem ser
-        # negativos (ex.: planilha atual não cobre tudo que havia antes).
-        aj_creditos_delta = especial_total - index.antecipacao_stripped_e111_total
+        # Deltas do E110: (novo total) − (total antigo de antecipação que está
+        # sendo removido) — substituição, não acúmulo. Podem ser negativos.
+        # aj_creditos_delta usa credit_to_claim (crédito de período anterior
+        # sendo reivindicado agora), NÃO especial_total (débito deste período,
+        # que ainda não vira crédito neste arquivo).
+        aj_creditos_delta = credit_to_claim - index.antecipacao_stripped_e111_total
         deb_esp_delta = total_for_deb_esp - index.antecipacao_stripped_e116_total
 
         # ── Streaming Pass 2 ─────────────────────────────────────────────────
@@ -362,21 +383,25 @@ class SpedEnricher:
                 # ── Bloco E: E110 ────────────────────────────────────────────
                 elif reg == "E110" and line_number == index.e110_line:
                     fout.write(_rewrite_e110(raw, deb_esp_delta, aj_creditos_delta))
-                    # Injeta E111 PA020008 fresco (soma só da planilha atual —
-                    # qualquer E111 de antecipação antigo foi removido abaixo)
-                    if especial_total > Decimal("0"):
+                    # Injeta E111 PA020008 com o crédito REIVINDICADO (de um
+                    # período anterior) — não com o débito deste período
+                    # (qualquer E111 de antecipação antigo foi removido abaixo).
+                    if credit_to_claim > Decimal("0"):
                         e111_rec = build_pipe_record(
                             "E111",
                             CODIGOS["ESPECIAL"].e111 or "",
                             CODIGOS["ESPECIAL"].descricao_e111 or "",
-                            format_decimal(especial_total),
+                            format_decimal(credit_to_claim),
                         )
                         fout.write(e111_rec)
                         e_additions += 1
                         total_additions += 1
                         net_counts["E111"] += 1
                         result.e111_inserted += 1
-                        logger.info("E111 PA020008 inserido: %s", format_decimal(especial_total))
+                        logger.info(
+                            "E111 PA020008 inserido (crédito reivindicado): %s",
+                            format_decimal(credit_to_claim),
+                        )
                     continue
 
                 # ── Bloco E: E111/E116 de antecipação pré-existente — remove ─

@@ -1,6 +1,9 @@
 from datetime import date
+from decimal import Decimal
 
 from pydantic import BaseModel, field_validator
+
+from app.db.models import CreditStatus
 
 
 class CnpjRegistryData(BaseModel):
@@ -69,3 +72,18 @@ class CnpjLookupResult(CnpjRegistryData):
 
     name: str
     uf: str
+
+
+class PendingCreditRead(BaseModel):
+    """Crédito ESPECIAL apurado num período mas ainda não lançado (E111) —
+    orientação SEFA-PA 1173 §2, ver app/sped/writer.py. PENDING = à espera
+    do próximo período processado desta empresa; CLAIMED = já lançado."""
+
+    id: str
+    competencia_origem: date
+    valor: Decimal
+    status: CreditStatus
+    source_job_id: str
+    claimed_in_job_id: str | None
+
+    model_config = {"from_attributes": True}

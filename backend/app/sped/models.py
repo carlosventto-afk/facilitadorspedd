@@ -80,3 +80,9 @@ class ProcessingResult:
     anticipations_matched: int = 0
     anticipations_unmatched: list[str] = field(default_factory=list)
     total_icms_value: Decimal = Decimal("0")
+    # Total ESPECIAL apurado NESTE período (débito especial já lançado em
+    # C197/E116/DEB_ESP) — não é o valor lançado como E111 neste job (esse é
+    # `credit_to_claim`, de um período anterior); é o valor que o chamador
+    # deve persistir como novo crédito pendente, a reivindicar no período
+    # seguinte (orientação SEFA-PA 1173 §2).
+    especial_total: Decimal = Decimal("0")

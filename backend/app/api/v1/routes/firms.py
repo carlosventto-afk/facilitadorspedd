@@ -9,12 +9,25 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.v1.schemas.companies import CnpjLookupResult, CompanyCreate, CompanyRead, CompanyUpdate
+from app.api.v1.schemas.companies import (
+    CnpjLookupResult,
+    CompanyCreate,
+    CompanyRead,
+    CompanyUpdate,
+    PendingCreditRead,
+)
 from app.api.v1.schemas.firms import AccountingFirmRead, AccountingFirmUpdate, SubscriptionRead
 from app.api.v1.schemas.users import UserCreate, UserRead, UserUpdate
 from app.core.deps import GestorUser
 from app.core.security import hash_password
-from app.db.models import AccountingFirm, Company, Subscription, User, UserRole
+from app.db.models import (
+    AccountingFirm,
+    Company,
+    PendingAntecipacaoCredit,
+    Subscription,
+    User,
+    UserRole,
+)
 from app.db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -230,6 +243,34 @@ async def get_company(
     if not company:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empresa não encontrada")
     return company
+
+
+@router.get("/me/companies/{company_id}/pending-credits", response_model=list[PendingCreditRead])
+async def list_pending_credits(
+    company_id: str,
+    current_user: GestorUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[PendingAntecipacaoCredit]:
+    """Créditos ESPECIAL apurados mas ainda não lançados (E111) — orientação
+    SEFA-PA 1173 §2, ver app/sped/writer.py. Inclui PENDING (à espera do
+    próximo período processado) e CLAIMED (já lançados), mais recentes
+    primeiro — visibilidade pro contador acompanhar, não só um mecanismo
+    automático invisível."""
+    result = await db.execute(
+        select(Company).where(
+            Company.id == company_id,
+            Company.accounting_firm_id == current_user.accounting_firm_id,
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Empresa não encontrada")
+
+    credits_result = await db.execute(
+        select(PendingAntecipacaoCredit)
+        .where(PendingAntecipacaoCredit.company_id == company_id)
+        .order_by(PendingAntecipacaoCredit.competencia_origem.desc())
+    )
+    return list(credits_result.scalars().all())
 
 
 @router.patch("/me/companies/{company_id}", response_model=CompanyRead)

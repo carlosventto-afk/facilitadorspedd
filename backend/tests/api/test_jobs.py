@@ -1,16 +1,18 @@
 """Testes de API do fluxo de jobs: criar, upload, processar, baixar."""
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import boto3
 import pytest
 from httpx import AsyncClient
 from moto import mock_aws
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
-from app.db.models import Company, User
+from app.db.models import Company, CreditStatus, PendingAntecipacaoCredit, User
 from tests._helpers import write_minimal_sefa_excel, write_minimal_sped
 
 from .conftest import auth_headers
@@ -35,6 +37,7 @@ async def _create_job(client: AsyncClient, company: Company, headers: dict) -> s
 async def _upload_pair(
     client: AsyncClient, job_id: str, headers: dict, tmp_path: Path,
     company: Company, chave: str, icms: float = 500.00,
+    titulo: str = "Receita: 1173 - Antecipado Especial",
 ) -> None:
     sped_path = write_minimal_sped(
         tmp_path, chave_nfe=chave, cnpj=company.cnpj, filename=f"{chave}.txt"
@@ -48,7 +51,8 @@ async def _upload_pair(
     assert r.status_code == 204, r.text
 
     excel_path = write_minimal_sefa_excel(
-        tmp_path, chave_nfe=chave, cnpj=company.cnpj, icms_a_pagar=icms, filename=f"{chave}.xlsx"
+        tmp_path, chave_nfe=chave, cnpj=company.cnpj, icms_a_pagar=icms,
+        titulo=titulo, filename=f"{chave}.xlsx",
     )
     with excel_path.open("rb") as f:
         r = await client.post(
@@ -92,7 +96,12 @@ async def test_fluxo_completo_upload_processar_download(
     assert data["anticipations_matched"] == 1
     assert data["anticipations_total"] == 1
     assert data["c197_records_inserted"] == 1
-    assert data["e111_records_inserted"] == 1
+    # NÃO 1: orientação SEFA-PA 1173 §2 — o crédito ESPECIAL só pode ser
+    # apropriado (E111) no mês SEGUINTE ao débito, nunca no mesmo job. Este é
+    # o primeiro job da empresa, então os 500,00 viram crédito PENDENTE (ver
+    # test_credito_especial_e111_reivindicado_no_periodo_seguinte abaixo),
+    # não um E111 lançado agora.
+    assert data["e111_records_inserted"] == 0
     assert data["e116_records_inserted"] == 1
 
     r = await client.get(f"/jobs/{job_id}/download", headers=headers)
@@ -104,6 +113,195 @@ async def test_fluxo_completo_upload_processar_download(
     assert r.status_code == 200
     assert b"|E116|" in r.content
     assert r.headers["content-disposition"].startswith("attachment")
+
+
+# ── Crédito ESPECIAL pendente (SEFA-PA 1173 §2) ──────────────────────────────
+
+async def test_credito_especial_e111_reivindicado_no_periodo_seguinte(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    gestor_user: User,
+    company: Company,
+    tmp_path: Path,
+) -> None:
+    """Ciclo completo: job de Junho gera débito ESPECIAL (E111=0, vira crédito
+    PENDENTE); job de Julho da MESMA empresa reivindica esse crédito (E111=1,
+    com o valor de Junho) mesmo sem ESPECIAL nenhum no próprio match de Julho
+    — prova que o E111 vem do crédito pendente, não do período atual."""
+    from app.workers.tasks import run_sped_processing
+
+    headers = auth_headers(gestor_user)
+
+    # Junho: ESPECIAL 500,00 → débito lançado, crédito fica pendente
+    # (_create_job usa period 2026-06-01/2026-06-30)
+    job1_id = await _create_job(client, company, headers)
+    await _upload_pair(client, job1_id, headers, tmp_path, company, CHAVE_A, icms=500.00)
+    result1 = await run_sped_processing(job1_id, session_factory=session_factory)
+    assert result1["status"] == "completed"
+
+    async with session_factory() as db:
+        credits = (await db.execute(select(PendingAntecipacaoCredit))).scalars().all()
+        assert len(credits) == 1
+        assert credits[0].valor == Decimal("500.00")
+        assert credits[0].status == CreditStatus.PENDING
+        assert credits[0].company_id == company.id
+
+    # Julho: sem ESPECIAL no match desta vez (só NORMAL) — mas deve
+    # reivindicar o crédito pendente de Junho mesmo assim
+    r = await client.post(
+        f"/companies/{company.id}/jobs",
+        json={"period_start": "2026-07-01", "period_end": "2026-07-31"},
+        headers=headers,
+    )
+    assert r.status_code == 201, r.text
+    job2_id = r.json()["id"]
+    await _upload_pair(
+        client, job2_id, headers, tmp_path, company, CHAVE_B, icms=100.00,
+        titulo="Receita: 1146 - Antecipado Normal",
+    )
+    result2 = await run_sped_processing(job2_id, session_factory=session_factory)
+    assert result2["status"] == "completed"
+
+    r = await client.get(f"/jobs/{job2_id}", headers=headers)
+    data = r.json()
+    assert data["e111_records_inserted"] == 1
+
+    r = await client.get(f"/jobs/{job2_id}/download", headers=headers)
+    download_url = r.json()["url"]
+    r = await client.get(download_url)
+    assert b"|E111|PA020008|" in r.content
+    assert b"500,00" in r.content   # crédito de Junho, não algo derivado de Julho
+
+    async with session_factory() as db:
+        credit = (await db.execute(select(PendingAntecipacaoCredit))).scalar_one()
+        assert credit.status == CreditStatus.CLAIMED
+        assert credit.claimed_in_job_id == job2_id
+
+
+async def test_credito_especial_mes_pulado_ainda_e_reivindicado(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    gestor_user: User,
+    company: Company,
+    tmp_path: Path,
+) -> None:
+    """Se a empresa pular um mês (processar Janeiro, depois só Março, sem
+    Fevereiro), o crédito de Janeiro ainda deve ser reivindicado em Março —
+    não expira por causa do mês pulado (ver conversa registrada na memória
+    do projeto: resposta simulada, não confirmada por contador real)."""
+    from app.workers.tasks import run_sped_processing
+
+    headers = auth_headers(gestor_user)
+
+    r = await client.post(
+        f"/companies/{company.id}/jobs",
+        json={"period_start": "2026-01-01", "period_end": "2026-01-31"},
+        headers=headers,
+    )
+    job1_id = r.json()["id"]
+    await _upload_pair(client, job1_id, headers, tmp_path, company, CHAVE_A, icms=300.00)
+    await run_sped_processing(job1_id, session_factory=session_factory)
+
+    # Fevereiro nunca é processado — pula direto pra Março
+    r = await client.post(
+        f"/companies/{company.id}/jobs",
+        json={"period_start": "2026-03-01", "period_end": "2026-03-31"},
+        headers=headers,
+    )
+    job2_id = r.json()["id"]
+    await _upload_pair(
+        client, job2_id, headers, tmp_path, company, CHAVE_B, icms=50.00,
+        titulo="Receita: 1146 - Antecipado Normal",
+    )
+    result2 = await run_sped_processing(job2_id, session_factory=session_factory)
+    assert result2["status"] == "completed"
+
+    r = await client.get(f"/jobs/{job2_id}", headers=headers)
+    assert r.json()["e111_records_inserted"] == 1
+
+    async with session_factory() as db:
+        credit = (await db.execute(select(PendingAntecipacaoCredit))).scalar_one()
+        assert credit.status == CreditStatus.CLAIMED
+        assert credit.valor == Decimal("300.00")
+
+
+async def test_reprocessamento_apos_credito_reivindicado_nao_sobrescreve(
+    client: AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+    gestor_user: User,
+    company: Company,
+    tmp_path: Path,
+) -> None:
+    """Se o job de origem do crédito for reprocessado DEPOIS do crédito já
+    ter sido reivindicado num período seguinte, e o valor recalculado for
+    diferente do original, o registro já reivindicado NÃO deve ser
+    sobrescrito silenciosamente (o EFD que já usou esse valor pode já ter
+    sido transmitido à SEFA) — só um JobLog de aviso para revisão manual."""
+    from app.core import storage
+    from app.db.models import JobLog, LogLevel
+    from app.workers.tasks import run_sped_processing
+
+    headers = auth_headers(gestor_user)
+
+    r = await client.post(
+        f"/companies/{company.id}/jobs",
+        json={"period_start": "2026-01-01", "period_end": "2026-01-31"},
+        headers=headers,
+    )
+    job1_id = r.json()["id"]
+    await _upload_pair(client, job1_id, headers, tmp_path, company, CHAVE_A, icms=100.00)
+    await run_sped_processing(job1_id, session_factory=session_factory)
+
+    r = await client.post(
+        f"/companies/{company.id}/jobs",
+        json={"period_start": "2026-02-01", "period_end": "2026-02-28"},
+        headers=headers,
+    )
+    job2_id = r.json()["id"]
+    await _upload_pair(
+        client, job2_id, headers, tmp_path, company, CHAVE_B, icms=10.00,
+        titulo="Receita: 1146 - Antecipado Normal",
+    )
+    await run_sped_processing(job2_id, session_factory=session_factory)
+
+    async with session_factory() as db:
+        credit = (await db.execute(select(PendingAntecipacaoCredit))).scalar_one()
+        assert credit.status == CreditStatus.CLAIMED
+        assert credit.valor == Decimal("100.00")
+
+    # Sobrescreve o Excel de origem do job1 com um valor DIFERENTE (simula
+    # dado de entrada corrigido) e reprocessa o MESMO job_id diretamente —
+    # é assim que um retry automático do Celery reprocessaria.
+    async with session_factory() as db:
+        from app.db.models import ProcessingJob
+        job1 = (
+            await db.execute(select(ProcessingJob).where(ProcessingJob.id == job1_id))
+        ).scalar_one()
+        excel_key = job1.excel_input_s3_key
+
+    excel_path = storage.local_path_for(excel_key)
+    new_excel = write_minimal_sefa_excel(
+        tmp_path, chave_nfe=CHAVE_A, cnpj=company.cnpj, icms_a_pagar=999.00,
+        filename="reprocessed.xlsx",
+    )
+    excel_path.write_bytes(new_excel.read_bytes())
+
+    result1_retry = await run_sped_processing(job1_id, session_factory=session_factory)
+    assert result1_retry["status"] == "completed"
+
+    async with session_factory() as db:
+        credit = (await db.execute(select(PendingAntecipacaoCredit))).scalar_one()
+        # Continua com o valor original reivindicado — NÃO foi sobrescrito
+        assert credit.valor == Decimal("100.00")
+        assert credit.status == CreditStatus.CLAIMED
+
+        warn_logs = (
+            await db.execute(
+                select(JobLog).where(JobLog.job_id == job1_id, JobLog.level == LogLevel.WARN)
+            )
+        ).scalars().all()
+        assert len(warn_logs) == 1
+        assert "divergência" in warn_logs[0].message.lower()
 
 
 async def test_fluxo_completo_com_backend_s3(

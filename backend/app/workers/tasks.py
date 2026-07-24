@@ -1,6 +1,7 @@
 """Celery tasks for SPED processing jobs."""
 import logging
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 from celery import Task
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -53,12 +54,15 @@ async def run_sped_processing(
     from app.core import storage
     from app.db.models import (
         AnticipationRecord,
+        CreditStatus,
         JobLog,
         JobStatus,
         LogLevel,
+        PendingAntecipacaoCredit,
         ProcessingJob,
         TipoAntecipacao,
     )
+    from app.sped.formatter import format_decimal
 
     engine = None
     if session_factory is None:
@@ -141,11 +145,30 @@ async def run_sped_processing(
                         "Nenhuma antecipação da planilha foi associada a uma nota fiscal do SPED"
                     )
 
+                # Crédito ESPECIAL pendente de período(s) anterior(es) desta
+                # empresa (orientação SEFA-PA 1173 §2: o crédito só pode ser
+                # apropriado no mês seguinte ao débito — ver docstring de
+                # app/sped/writer.py). Só fica marcado CLAIMED lá embaixo, no
+                # bloco de sucesso — se o job falhar antes disso, nada foi
+                # persistido e o crédito continua PENDING, disponível pra
+                # próxima tentativa.
+                pending_result = await db.execute(
+                    select(PendingAntecipacaoCredit).where(
+                        PendingAntecipacaoCredit.company_id == job.company_id,
+                        PendingAntecipacaoCredit.status == CreditStatus.PENDING,
+                        PendingAntecipacaoCredit.competencia_origem < job.period_start,
+                    )
+                )
+                pending_credits = list(pending_result.scalars().all())
+                credit_to_claim = sum((c.valor for c in pending_credits), Decimal("0"))
+
                 output_key = f"jobs/{job_id}/sped_output.txt"
                 output_path = storage.local_path_for(output_key, ensure_parent=True)
 
                 try:
-                    sped_result = SpedEnricher().enrich(sped_path, output_path, index, matched)
+                    sped_result = SpedEnricher().enrich(
+                        sped_path, output_path, index, matched, credit_to_claim=credit_to_claim
+                    )
                 except Exception as exc:
                     raise SpedProcessingError(f"Falha ao enriquecer o arquivo SPED: {exc}") from exc
 
@@ -202,6 +225,77 @@ async def run_sped_processing(
                 job.e111_records_inserted = sped_result.e111_inserted
                 job.e116_records_inserted = sped_result.e116_inserted
                 job.processing_finished_at = datetime.now(UTC)
+
+                # Reivindica os créditos pendentes consultados acima — só
+                # agora, junto do commit de sucesso, pelo mesmo motivo do
+                # comentário lá em cima.
+                if pending_credits:
+                    for credit in pending_credits:
+                        credit.status = CreditStatus.CLAIMED
+                        credit.claimed_in_job_id = job_id
+                    origens = ", ".join(str(c.competencia_origem) for c in pending_credits)
+                    db.add(JobLog(
+                        job_id=job_id, level=LogLevel.INFO,
+                        message=(
+                            f"Crédito ESPECIAL de {format_decimal(credit_to_claim)} reivindicado "
+                            f"via E111 (origem: {origens})"
+                        ),
+                    ))
+
+                # Débito ESPECIAL deste período vira crédito pendente pro
+                # próximo período desta empresa reivindicar (não lançado
+                # neste arquivo — ver docstring de app/sped/writer.py).
+                # Idempotente por (company_id, competencia_origem): se já
+                # existe um registro PENDING pra essa competência (job
+                # reprocessado antes do crédito ser reivindicado em algum
+                # período seguinte), só atualiza o valor. Se já existe
+                # CLAIMED com valor diferente do recalculado agora, NÃO
+                # sobrescreve — o EFD que já reivindicou esse crédito pode já
+                # ter sido transmitido à SEFA; só loga um aviso pra revisão
+                # manual do contador.
+                if sped_result.especial_total > Decimal("0"):
+                    existing_result = await db.execute(
+                        select(PendingAntecipacaoCredit).where(
+                            PendingAntecipacaoCredit.company_id == job.company_id,
+                            PendingAntecipacaoCredit.competencia_origem == job.period_end,
+                        )
+                    )
+                    existing_credit = existing_result.scalar_one_or_none()
+
+                    if existing_credit is None:
+                        db.add(PendingAntecipacaoCredit(
+                            company_id=job.company_id,
+                            competencia_origem=job.period_end,
+                            valor=sped_result.especial_total,
+                            status=CreditStatus.PENDING,
+                            source_job_id=job_id,
+                        ))
+                        db.add(JobLog(
+                            job_id=job_id, level=LogLevel.INFO,
+                            message=(
+                                f"Débito ESPECIAL de {format_decimal(sped_result.especial_total)} "
+                                "registrado como crédito pendente da competência "
+                                f"{job.period_end}, a reivindicar no próximo período processado "
+                                "desta empresa"
+                            ),
+                        ))
+                    elif existing_credit.status == CreditStatus.PENDING:
+                        existing_credit.valor = sped_result.especial_total
+                        existing_credit.source_job_id = job_id
+                    elif existing_credit.valor != sped_result.especial_total:
+                        db.add(JobLog(
+                            job_id=job_id, level=LogLevel.WARN,
+                            message=(
+                                "Reprocessamento recalculou o crédito ESPECIAL da competência "
+                                f"{job.period_end} para "
+                                f"{format_decimal(sped_result.especial_total)}, "
+                                "mas esse crédito já foi reivindicado (valor "
+                                f"{format_decimal(existing_credit.valor)}) num período seguinte já "
+                                "processado — divergência não aplicada automaticamente, requer "
+                                "revisão manual."
+                            ),
+                        ))
+
                 db.add(JobLog(
                     job_id=job_id, level=LogLevel.INFO,
                     message=(

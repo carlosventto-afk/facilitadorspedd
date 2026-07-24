@@ -58,6 +58,11 @@ class LogLevel(str, enum.Enum):
     ERROR = "ERROR"
 
 
+class CreditStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    CLAIMED = "CLAIMED"
+
+
 # ─── Subscription ────────────────────────────────────────────────────────────
 
 class Subscription(Base, TimestampMixin):
@@ -154,6 +159,9 @@ class Company(Base, TimestampMixin):
 
     accounting_firm: Mapped["AccountingFirm"] = relationship(back_populates="companies")
     jobs: Mapped[list["ProcessingJob"]] = relationship(back_populates="company")
+    pending_credits: Mapped[list["PendingAntecipacaoCredit"]] = relationship(
+        back_populates="company"
+    )
 
 
 # ─── Processing Job ───────────────────────────────────────────────────────────
@@ -237,3 +245,42 @@ class AnticipationRecord(Base):
     matched: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     job: Mapped["ProcessingJob"] = relationship(back_populates="anticipation_records")
+
+
+# ─── Pending Antecipação Credit (E111 timing — SEFA-PA §2) ────────────────────
+
+class PendingAntecipacaoCredit(Base, TimestampMixin):
+    """Crédito de ICMS antecipado especial (E111/PA020008) apurado num job mas
+    ainda não lançado, à espera do período seguinte.
+
+    Orientação SEFA-PA 1173 §2: o débito especial (C197/E116/DEB_ESP) é
+    lançado no mês de entrada, mas o crédito correspondente (E111, campo 8 do
+    E110) só pode ser apropriado na EFD do mês SEGUINTE. O motor processa um
+    período por job sem nenhum estado entre execuções, então esse crédito
+    precisa ser persistido aqui pelo job de origem e reivindicado pelo
+    próximo job dessa empresa (não necessariamente o mês civil seguinte —
+    dá pra ficar pendente por vários períodos se a empresa não for reprocessada
+    nesse intervalo).
+    """
+    __tablename__ = "pending_antecipacao_credits"
+    __table_args__ = (
+        UniqueConstraint("company_id", "competencia_origem", name="uq_company_competencia_origem"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    company_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    competencia_origem: Mapped[date] = mapped_column(Date, nullable=False)
+    valor: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    status: Mapped[CreditStatus] = mapped_column(
+        Enum(CreditStatus), nullable=False, default=CreditStatus.PENDING
+    )
+    source_job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("processing_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    claimed_in_job_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("processing_jobs.id", ondelete="SET NULL")
+    )
+
+    company: Mapped["Company"] = relationship(back_populates="pending_credits")

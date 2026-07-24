@@ -5,9 +5,9 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { Building2, Loader2, Pencil, Plus, Power } from "lucide-react";
+import { Building2, Loader2, Pencil, Plus, Power, Search } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AccountingFirm, SubscriptionPlan } from "@/types";
+import type { AccountingFirm, CnpjLookupResult, SubscriptionPlan } from "@/types";
 import { Modal } from "@/components/ui/Modal";
 
 const PLAN_LABELS: Record<SubscriptionPlan, string> = {
@@ -25,10 +25,13 @@ const STATUS_COLORS: Record<string, string> = {
 
 const createSchema = z.object({
   name: z.string().min(2, "Nome muito curto"),
-  cnpj: z
+  cpf_cnpj: z
     .string()
-    .min(1, "CNPJ obrigatório")
-    .refine((v) => v.replace(/\D/g, "").length === 14, "CNPJ deve ter 14 dígitos"),
+    .min(1, "CPF ou CNPJ obrigatório")
+    .refine(
+      (v) => [11, 14].includes(v.replace(/\D/g, "").length),
+      "Informe um CPF (11 dígitos) ou CNPJ (14 dígitos)"
+    ),
   email: z.string().email("E-mail inválido"),
   phone: z.string().optional(),
   plan: z.enum(["STARTER", "PROFESSIONAL", "ENTERPRISE"]),
@@ -56,6 +59,7 @@ export default function AdminEscritoriosPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<AccountingFirm | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [lookupLoading, setLookupLoading] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -76,6 +80,30 @@ export default function AdminEscritoriosPage() {
     defaultValues: { plan: "STARTER" },
   });
   const editForm = useForm<EditForm>({ resolver: zodResolver(editSchema) });
+
+  const handleLookup = async () => {
+    const digits = createForm.getValues("cpf_cnpj").replace(/\D/g, "");
+    if (digits.length === 11) {
+      toast.error("Consulta automática disponível só para CNPJ — preencha os dados do CPF manualmente");
+      return;
+    }
+    if (digits.length !== 14) {
+      toast.error("Informe um CNPJ com 14 dígitos para buscar");
+      return;
+    }
+    setLookupLoading(true);
+    try {
+      const { data } = await api.get<CnpjLookupResult>(`/firms/me/cnpj/${digits}`);
+      createForm.setValue("name", data.name);
+      createForm.setValue("email", data.email ?? "");
+      createForm.setValue("phone", data.telefone ?? "");
+      toast.success("Dados do CNPJ carregados");
+    } catch (err) {
+      toast.error(errorMessage(err, "Erro ao consultar CNPJ"));
+    } finally {
+      setLookupLoading(false);
+    }
+  };
 
   const onCreate = async (data: CreateForm) => {
     setSubmitting(true);
@@ -165,7 +193,7 @@ export default function AdminEscritoriosPage() {
             <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
               <tr>
                 <th className="text-left px-6 py-3 font-medium">Escritório</th>
-                <th className="text-left px-6 py-3 font-medium">CNPJ</th>
+                <th className="text-left px-6 py-3 font-medium">CPF/CNPJ</th>
                 <th className="text-left px-6 py-3 font-medium">Plano</th>
                 <th className="text-left px-6 py-3 font-medium">Assinatura</th>
                 <th className="text-left px-6 py-3 font-medium">Limites</th>
@@ -180,7 +208,7 @@ export default function AdminEscritoriosPage() {
                     <p className="font-medium text-gray-900">{f.name}</p>
                     <p className="text-xs text-gray-400">{f.email}</p>
                   </td>
-                  <td className="px-6 py-4 text-gray-600">{f.cnpj}</td>
+                  <td className="px-6 py-4 text-gray-600">{f.cpf_cnpj}</td>
                   <td className="px-6 py-4 text-gray-600">
                     {f.subscription ? PLAN_LABELS[f.subscription.plan] : "—"}
                   </td>
@@ -246,12 +274,26 @@ export default function AdminEscritoriosPage() {
               placeholder="Escritório Contábil LTDA"
             />
           </Field>
-          <Field label="CNPJ" error={createForm.formState.errors.cnpj?.message}>
-            <input
-              {...createForm.register("cnpj")}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="00.000.000/0000-00"
-            />
+          <Field label="CPF/CNPJ" error={createForm.formState.errors.cpf_cnpj?.message}>
+            <div className="flex gap-2">
+              <input
+                {...createForm.register("cpf_cnpj")}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="CNPJ ou CPF"
+              />
+              <button
+                type="button"
+                onClick={handleLookup}
+                disabled={lookupLoading}
+                className="flex items-center gap-2 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 text-gray-700 text-sm font-medium px-4 rounded-lg transition whitespace-nowrap"
+              >
+                {lookupLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                Buscar CNPJ
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              Para CNPJ, os dados são preenchidos automaticamente pela Receita Federal. Para CPF, preencha manualmente.
+            </p>
           </Field>
           <Field label="E-mail" error={createForm.formState.errors.email?.message}>
             <input

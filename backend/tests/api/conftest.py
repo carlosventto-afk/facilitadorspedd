@@ -71,7 +71,7 @@ async def client(
 @pytest_asyncio.fixture
 async def accounting_firm(db: AsyncSession) -> AccountingFirm:
     firm = AccountingFirm(
-        name="Escritório Teste", cnpj="11222333000181", email="contato@teste.com.br"
+        name="Escritório Teste", cpf_cnpj="11222333000181", email="contato@teste.com.br"
     )
     db.add(firm)
     await db.commit()

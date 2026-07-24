@@ -15,16 +15,16 @@ class SubscriptionRead(BaseModel):
 
 class _AccountingFirmCreateBase(BaseModel):
     name: str
-    cnpj: str
+    cpf_cnpj: str
     email: EmailStr
     phone: str | None = None
 
-    @field_validator("cnpj")
+    @field_validator("cpf_cnpj")
     @classmethod
-    def clean_cnpj(cls, v: str) -> str:
+    def clean_cpf_cnpj(cls, v: str) -> str:
         digits = "".join(c for c in v if c.isdigit())
-        if len(digits) != 14:
-            raise ValueError("CNPJ deve ter 14 dígitos")
+        if len(digits) not in (11, 14):
+            raise ValueError("CPF deve ter 11 dígitos ou CNPJ 14 dígitos")
         return digits
 
 
@@ -50,7 +50,7 @@ class AccountingFirmUpdate(BaseModel):
 class AccountingFirmRead(BaseModel):
     id: str
     name: str
-    cnpj: str
+    cpf_cnpj: str
     email: str
     phone: str | None
     is_active: bool

@@ -24,7 +24,7 @@ export interface Subscription {
 export interface AccountingFirm {
   id: string;
   name: string;
-  cnpj: string;
+  cpf_cnpj: string;
   email: string;
   phone: string | null;
   is_active: boolean;

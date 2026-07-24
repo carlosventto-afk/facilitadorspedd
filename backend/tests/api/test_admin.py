@@ -10,10 +10,14 @@ from app.db.models import AccountingFirm, Company, Invitation, InvitationStatus,
 from .conftest import auth_headers
 
 
-async def _create_firm(client: AsyncClient, headers: dict, cnpj: str = "33444555000166") -> dict:
+async def _create_firm(
+    client: AsyncClient, headers: dict, cpf_cnpj: str = "33444555000166"
+) -> dict:
     r = await client.post(
         "/admin/accounting-firms",
-        json={"name": "Escritório Novo LTDA", "cnpj": cnpj, "email": "novo@escritorio.com.br"},
+        json={
+            "name": "Escritório Novo LTDA", "cpf_cnpj": cpf_cnpj, "email": "novo@escritorio.com.br",
+        },
         headers=headers,
     )
     assert r.status_code == 201, r.text
@@ -90,13 +94,19 @@ async def test_ativar_desativar_escritorio(client: AsyncClient, admin_user: User
 
 async def test_cnpj_duplicado_retorna_409(client: AsyncClient, admin_user: User) -> None:
     headers = auth_headers(admin_user)
-    await _create_firm(client, headers, cnpj="11222333000181")
+    await _create_firm(client, headers, cpf_cnpj="11222333000181")
     r = await client.post(
         "/admin/accounting-firms",
-        json={"name": "Outro", "cnpj": "11222333000181", "email": "outro@teste.com.br"},
+        json={"name": "Outro", "cpf_cnpj": "11222333000181", "email": "outro@teste.com.br"},
         headers=headers,
     )
     assert r.status_code == 409
+
+
+async def test_admin_cria_escritorio_com_cpf(client: AsyncClient, admin_user: User) -> None:
+    headers = auth_headers(admin_user)
+    firm = await _create_firm(client, headers, cpf_cnpj="529.982.247-25")
+    assert firm["cpf_cnpj"] == "52998224725"
 
 
 # ── Usuários ─────────────────────────────────────────────────────────────────
@@ -336,7 +346,7 @@ async def test_listar_empresas_de_todos_os_escritorios(
     client: AsyncClient, admin_user: User, accounting_firm: AccountingFirm, company: Company,
 ) -> None:
     headers = auth_headers(admin_user)
-    firm2 = await _create_firm(client, headers, cnpj="22111222000133")
+    firm2 = await _create_firm(client, headers, cpf_cnpj="22111222000133")
     r = await client.post(
         "/admin/companies",
         json={

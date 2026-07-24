@@ -97,7 +97,7 @@ class AccountingFirm(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    cnpj: Mapped[str] = mapped_column(String(14), unique=True, nullable=False)
+    cpf_cnpj: Mapped[str] = mapped_column(String(14), unique=True, nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     phone: Mapped[str | None] = mapped_column(String(20))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

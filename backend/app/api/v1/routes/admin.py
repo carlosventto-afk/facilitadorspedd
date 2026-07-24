@@ -62,9 +62,11 @@ async def create_firm(
     payload: AccountingFirmCreate,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> AccountingFirm:
-    existing = await db.execute(select(AccountingFirm).where(AccountingFirm.cnpj == payload.cnpj))
+    existing = await db.execute(
+        select(AccountingFirm).where(AccountingFirm.cpf_cnpj == payload.cpf_cnpj)
+    )
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="CNPJ já cadastrado")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="CPF/CNPJ já cadastrado")
 
     limits = PLAN_LIMITS[payload.plan]
     subscription = Subscription(
@@ -78,7 +80,7 @@ async def create_firm(
 
     firm = AccountingFirm(
         name=payload.name,
-        cnpj=payload.cnpj,
+        cpf_cnpj=payload.cpf_cnpj,
         email=payload.email.lower(),
         phone=payload.phone,
         subscription_id=subscription.id,

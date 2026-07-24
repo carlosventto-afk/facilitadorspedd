@@ -177,8 +177,8 @@ export default function AssinaturaPage() {
             <p className="font-medium text-gray-900">{firm?.name}</p>
           </div>
           <div>
-            <p className="text-gray-500">CNPJ</p>
-            <p className="font-medium text-gray-900">{firm?.cnpj}</p>
+            <p className="text-gray-500">CPF/CNPJ</p>
+            <p className="font-medium text-gray-900">{firm?.cpf_cnpj}</p>
           </div>
           <div>
             <p className="text-gray-500">E-mail</p>

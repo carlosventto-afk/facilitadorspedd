@@ -138,7 +138,7 @@ async def test_gestor_sem_escritorio_cria_o_proprio(client: AsyncClient, db: Asy
         "/firms",
         json={
             "name": "Meu Escritório LTDA",
-            "cnpj": "44555666000177",
+            "cpf_cnpj": "44555666000177",
             "email": "contato@meuescritorio.com.br",
         },
         headers=auth_headers(gestor),
@@ -159,10 +159,41 @@ async def test_gestor_que_ja_tem_escritorio_recebe_409(
 ) -> None:
     r = await client.post(
         "/firms",
-        json={"name": "Outro", "cnpj": "77888999000155", "email": "outro@teste.com.br"},
+        json={"name": "Outro", "cpf_cnpj": "77888999000155", "email": "outro@teste.com.br"},
         headers=auth_headers(gestor_user),
     )
     assert r.status_code == 409
+
+
+async def test_gestor_sem_escritorio_cria_o_proprio_com_cpf(
+    client: AsyncClient, db: AsyncSession,
+) -> None:
+    """Contador autônomo (profissional liberal) sem CNPJ — cadastra o
+    escritório usando o próprio CPF."""
+    gestor = await _create_firmless_gestor(db)
+    r = await client.post(
+        "/firms",
+        json={
+            "name": "Contador Autônomo",
+            "cpf_cnpj": "529.982.247-25",
+            "email": "contador@teste.com.br",
+        },
+        headers=auth_headers(gestor),
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["cpf_cnpj"] == "52998224725"
+
+
+async def test_criar_escritorio_documento_com_quantidade_invalida_de_digitos_retorna_422(
+    client: AsyncClient, db: AsyncSession,
+) -> None:
+    gestor = await _create_firmless_gestor(db)
+    r = await client.post(
+        "/firms",
+        json={"name": "X", "cpf_cnpj": "123456789", "email": "x@teste.com.br"},
+        headers=auth_headers(gestor),
+    )
+    assert r.status_code == 422
 
 
 async def test_criar_escritorio_cnpj_duplicado_retorna_409(
@@ -173,7 +204,7 @@ async def test_criar_escritorio_cnpj_duplicado_retorna_409(
         "/firms",
         json={
             "name": "Escritório Duplicado",
-            "cnpj": accounting_firm.cnpj,
+            "cpf_cnpj": accounting_firm.cpf_cnpj,
             "email": "duplicado@teste.com.br",
         },
         headers=auth_headers(gestor),
@@ -195,7 +226,7 @@ async def test_operador_nao_pode_criar_escritorio(client: AsyncClient, db: Async
 
     r = await client.post(
         "/firms",
-        json={"name": "X", "cnpj": "11122233000144", "email": "x@teste.com.br"},
+        json={"name": "X", "cpf_cnpj": "11122233000144", "email": "x@teste.com.br"},
         headers=auth_headers(operador),
     )
     assert r.status_code == 403
@@ -209,7 +240,7 @@ async def test_admin_nao_pode_criar_escritorio_via_post_firms(
     escritório."""
     r = await client.post(
         "/firms",
-        json={"name": "X", "cnpj": "99988877000166", "email": "x@teste.com.br"},
+        json={"name": "X", "cpf_cnpj": "99988877000166", "email": "x@teste.com.br"},
         headers=auth_headers(admin_user),
     )
     assert r.status_code == 403
@@ -277,7 +308,7 @@ async def test_vincular_empresa_de_outro_escritorio_retorna_400(
 ) -> None:
     operador = await _create_operator(db, accounting_firm)
     outro_firm = AccountingFirm(
-        name="Outro Escritório", cnpj="66777888000133", email="outro@teste.com.br",
+        name="Outro Escritório", cpf_cnpj="66777888000133", email="outro@teste.com.br",
     )
     db.add(outro_firm)
     await db.commit()

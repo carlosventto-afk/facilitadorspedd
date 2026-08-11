@@ -91,6 +91,12 @@ export interface OperatorUser {
   accounting_firm_id: string | null;
 }
 
+export interface JobLogEntry {
+  level: "INFO" | "WARN" | "ERROR";
+  message: string;
+  created_at: string;
+}
+
 export interface ProcessingJob {
   id: string;
   company_id: string;

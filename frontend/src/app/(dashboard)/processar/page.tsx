@@ -4,9 +4,11 @@ import { useCallback, useEffect, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
-import type { Company, ProcessingJob } from "@/types";
+import type { Company, JobLogEntry, ProcessingJob } from "@/types";
 import {
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Download,
   FileText,
   Loader2,
@@ -26,9 +28,24 @@ export default function ProcessarPage() {
   const [step, setStep] = useState<Step>("form");
   const [job, setJob] = useState<ProcessingJob | null>(null);
   const [polling, setPolling] = useState(false);
+  const [jobLogs, setJobLogs] = useState<JobLogEntry[]>([]);
+  const [logsOpen, setLogsOpen] = useState(false);
 
   useEffect(() => {
     api.get("/firms/me/companies").then((r) => setCompanies(r.data));
+  }, []);
+
+  // Busca o log completo do job (INFO/WARN/ERROR de cada etapa, incluindo
+  // uma linha por antecipação da planilha sem correspondência no SPED).
+  // Falha silenciosamente — a seção de log só não aparece nesse caso, o
+  // resto da tela (stats de sucesso ou mensagem de erro) continua normal.
+  const fetchLogs = useCallback(async (jobId: string) => {
+    try {
+      const r = await api.get(`/jobs/${jobId}/logs`);
+      setJobLogs(r.data);
+    } catch {
+      setJobLogs([]);
+    }
   }, []);
 
   // Poll job status every 3 seconds while processing
@@ -41,16 +58,18 @@ export default function ProcessarPage() {
         if (r.data.status === "COMPLETED") {
           setStep("done");
           setPolling(false);
+          await fetchLogs(r.data.id);
         } else if (r.data.status === "FAILED") {
           setStep("error");
           setPolling(false);
+          await fetchLogs(r.data.id);
         }
       } catch {
         clearInterval(interval);
       }
     }, 3000);
     return () => clearInterval(interval);
-  }, [polling, job?.id]);
+  }, [polling, job?.id, fetchLogs]);
 
   const onDropSped = useCallback((files: File[]) => {
     const f = files[0];
@@ -91,6 +110,8 @@ export default function ProcessarPage() {
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
+    setJobLogs([]);
+    setLogsOpen(false);
     try {
       const [year, month] = competencia.split("-").map(Number);
       const periodStart = `${year}-${String(month).padStart(2, "0")}-01`;
@@ -140,6 +161,18 @@ export default function ProcessarPage() {
     } catch {
       toast.error("Erro ao obter link de download");
     }
+  };
+
+  const handleDownloadLog = () => {
+    if (!job || jobLogs.length === 0) return;
+    const text = jobLogs.map(formatLogLine).join("\n");
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `log_job_${job.id.slice(0, 8)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -261,6 +294,28 @@ export default function ProcessarPage() {
             <Download className="w-5 h-5" />
             Baixar SPED Processado
           </button>
+
+          {jobLogs.length > 0 && (
+            <div className="border-t border-gray-100 pt-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => setLogsOpen((o) => !o)}
+                  className="flex items-center gap-1 text-sm font-medium text-gray-600 hover:text-gray-900"
+                >
+                  {logsOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                  Ver log completo do processamento
+                </button>
+                <button
+                  onClick={handleDownloadLog}
+                  className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-gray-800"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Baixar log (.txt)
+                </button>
+              </div>
+              {logsOpen && <LogList entries={jobLogs} />}
+            </div>
+          )}
         </div>
       )}
 
@@ -273,6 +328,23 @@ export default function ProcessarPage() {
               <p className="text-sm text-gray-500">{job.error_message}</p>
             </div>
           </div>
+
+          {jobLogs.length > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-gray-600">Log completo do processamento</p>
+                <button
+                  onClick={handleDownloadLog}
+                  className="flex items-center gap-1 text-xs font-medium text-gray-500 hover:text-gray-800"
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Baixar log (.txt)
+                </button>
+              </div>
+              <LogList entries={jobLogs} />
+            </div>
+          )}
+
           <button
             onClick={() => setStep("form")}
             className="bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-lg text-sm transition"
@@ -333,6 +405,32 @@ function CheckItem({ ok, label }: { ok: boolean; label: string }) {
         {ok ? "✓" : "○"}
       </span>
       <span className={ok ? "text-gray-700" : "text-gray-400"}>{label}</span>
+    </div>
+  );
+}
+
+function formatLogLine(entry: JobLogEntry): string {
+  const time = new Date(entry.created_at).toLocaleTimeString("pt-BR", { hour12: false });
+  return `[${time}] ${entry.level.padEnd(5)} ${entry.message}`;
+}
+
+function LogList({ entries }: { entries: JobLogEntry[] }) {
+  return (
+    <div className="max-h-64 overflow-y-auto rounded-lg bg-gray-50 border border-gray-200 p-3 font-mono text-xs space-y-1">
+      {entries.map((entry, i) => (
+        <div
+          key={i}
+          className={cn(
+            entry.level === "ERROR"
+              ? "text-red-600"
+              : entry.level === "WARN"
+              ? "text-amber-600"
+              : "text-gray-500"
+          )}
+        >
+          {formatLogLine(entry)}
+        </div>
+      ))}
     </div>
   );
 }

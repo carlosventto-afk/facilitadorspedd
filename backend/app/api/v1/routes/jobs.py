@@ -1,4 +1,5 @@
 """Job endpoints: create, upload files, trigger processing, download output."""
+import logging
 from pathlib import Path
 from typing import Annotated
 
@@ -25,6 +26,8 @@ from app.db.models import (
     UserRole,
 )
 from app.db.session import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["jobs"])
 
@@ -159,6 +162,19 @@ async def _upload_file(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Arquivo excede limite de {settings.MAX_UPLOAD_SIZE_MB}MB",
         )
+    except Exception as exc:
+        # Sem isso, uma falha aqui (ex. credenciais/bucket S3 mal configurados
+        # em produção) sobe como exceção não tratada. O Starlette só injeta os
+        # headers de CORS em respostas que passam pelo ExceptionMiddleware —
+        # uma exceção não tratada escapa disso e vira um 500 sem CORS, que o
+        # navegador reporta como bloqueio de CORS (mascarando o erro real).
+        # Converter para HTTPException aqui resolve os dois problemas: expõe
+        # o motivo real e mantém os headers de CORS na resposta de erro.
+        logger.exception("Falha ao salvar arquivo %s do job %s", file_type, job.id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Falha ao salvar arquivo {file_type}: {exc}",
+        )
 
     if file_type == "sped":
         job.sped_input_s3_key = key
@@ -242,7 +258,26 @@ async def trigger_processing(
         )
 
     from app.workers.tasks import process_sped_job
-    process_sped_job.delay(job_id)
+    try:
+        process_sped_job.delay(job_id)
+    except Exception as exc:
+        # Mesmo raciocínio do upload: sem converter pra HTTPException, uma
+        # falha aqui (ex. broker Redis/Celery inacessível em produção) sobe
+        # como exceção não tratada — 500 sem headers de CORS, que o navegador
+        # reporta como bloqueio de CORS. Também desfaz a transição de status
+        # pra não deixar o job travado em PROCESSING sem nenhum worker
+        # notificado.
+        await db.execute(
+            update(ProcessingJob)
+            .where(ProcessingJob.id == job_id, ProcessingJob.status == JobStatus.PROCESSING)
+            .values(status=JobStatus.PENDING)
+        )
+        await db.commit()
+        logger.exception("Falha ao enfileirar processamento do job %s", job_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Falha ao iniciar processamento: {exc}",
+        )
 
     return {"message": "Processamento iniciado", "job_id": job_id}
 

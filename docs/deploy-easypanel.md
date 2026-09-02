@@ -10,13 +10,21 @@ esse acesso. O código e os scripts (`docker-compose.easypanel.yml`,
 
 Dentro de um projeto novo (ou existente) no Easypanel:
 
-1. **Add Service → Postgres** (template nativo). Anote a `DATABASE_URL`
-   gerada (aba "Credentials"/"Connect" do serviço) — é usada, em duas
-   formas diferentes, nas Sections 2 e 4: a Section 2 precisa de uma cópia
-   com o prefixo trocado para `postgresql+asyncpg://`; a Section 4 precisa
-   da string bruta, exatamente como o Easypanel gerou (sem `+asyncpg`),
-   porque vai direto pro `psql` dentro do `scripts/migrate_import.sh`, que
-   não entende esse prefixo. Guarde as duas formas separadamente.
+1. **Add Service → Postgres** (template nativo). Na criação, escolha
+   explicitamente a versão **16** (mesma versão do `postgres:16-alpine`
+   usado localmente e hardcoded em `scripts/migrate_import.sh`) — uma
+   versão mais antiga pode não conseguir restaurar um dump gerado pelo
+   pg16. Nomeie o banco `facilitador_sped` (mesmo nome usado localmente);
+   se o template não deixar escolher o nome, anote qual foi o nome gerado
+   e use-o de forma consistente nas Sections 2 e 4 — o que importa é que
+   o `DATABASE_URL` das duas sections aponte pro mesmo banco. Anote a
+   `DATABASE_URL` gerada (aba "Credentials"/"Connect" do serviço) — é
+   usada, em duas formas diferentes, nas Sections 2 e 4: a Section 2
+   precisa de uma cópia com o prefixo trocado para `postgresql+asyncpg://`;
+   a Section 4 precisa da string bruta, exatamente como o Easypanel gerou
+   (sem `+asyncpg`), porque vai direto pro `psql` dentro do
+   `scripts/migrate_import.sh`, que não entende esse prefixo. Guarde as
+   duas formas separadamente.
 2. **Add Service → Redis** (template nativo). Anote a URL de conexão.
 3. **Add Service → Compose**, apontando pro `docker-compose.easypanel.yml`
    deste repositório (conectar o GitHub, escolher o arquivo). Isso cria
@@ -33,7 +41,7 @@ Dentro de um projeto novo (ou existente) no Easypanel:
 |---|---|
 | `DATABASE_URL` | a do Postgres do Easypanel (Section 1.1), **com prefixo trocado para `postgresql+asyncpg://`** (driver assíncrono, igual ao Railway) — essa é a forma modificada; não é a mesma string usada na Section 4 |
 | `REDIS_URL`, `CELERY_BROKER_URL` | a do Redis do Easypanel (Section 1.2) |
-| `CELERY_RESULT_BACKEND` | mesma URL do Redis, com `/1` no final |
+| `CELERY_RESULT_BACKEND` | mesma URL do Redis, mas troque o índice do banco (`/0`, `/1`, etc., no final da URL) para `/1` — não apenas acrescente `/1` à URL como veio, senão vira `.../0/1` |
 | `SECRET_KEY` | **o mesmo valor já usado no `.env` local hoje** — não gerar um novo, senão invalida sessões ativas |
 | `SENDGRID_API_KEY`, `EMAIL_FROM` | os mesmos valores já usados no `.env` local hoje |
 | `FRONTEND_URL` | `https://facilitadorsped.gestaotecnologia.com` |
@@ -44,13 +52,21 @@ Dentro de um projeto novo (ou existente) no Easypanel:
 |---|---|
 | `NEXT_PUBLIC_API_URL` | `https://facilitadorsped-api.gestaotecnologia.com/api/v1` — variável de **build**, precisa estar marcada como "Build-time" no Easypanel (o Next.js grava isso no bundle do cliente durante o build) |
 
+Depois de salvar essa variável, dispare um **Rebuild/redeploy** do serviço
+`frontend` — como ela só é aplicada durante o build, qualquer build feito
+antes de configurá-la não vai ter o valor correto no bundle do cliente.
+
 ## 3. Domínios e DNS [MANUAL]
 
 1. No Easypanel, serviço `frontend` → aba Domains → adicionar
    `facilitadorsped.gestaotecnologia.com`. O Easypanel emite o certificado
    HTTPS automaticamente (Let's Encrypt) assim que o DNS resolver pra VPS.
-2. Serviço `backend` (dentro do serviço Compose) → aba Domains → adicionar
-   `facilitadorsped-api.gestaotecnologia.com`.
+2. No serviço Compose → aba Domains → adicionar
+   `facilitadorsped-api.gestaotecnologia.com`, selecionando explicitamente
+   o serviço interno **`backend`** e a porta **`8000`** como destino (um
+   grupo Compose tem mais de um serviço interno — `backend` e
+   `celery_worker` — então é preciso apontar o domínio pro serviço e porta
+   certos, não só "adicionar" o domínio genericamente).
 3. No painel de DNS do domínio `gestaotecnologia.com`, criar dois registros
    A (ou CNAME) apontando os dois subdomínios acima pro IP da VPS.
 
@@ -69,8 +85,22 @@ Dentro de um projeto novo (ou existente) no Easypanel:
    Gera `migration_export/<timestamp>/` com `facilitador_sped.sql` e
    `sped_uploads.tar.gz`.
 
-3. **[MANUAL]** Transferir essa pasta pra VPS (scp/SFTP):
+   Antes de transferir, confira a integridade do export (não existe backup
+   em nenhum outro lugar, então vale a pena checar antes de seguir):
    ```bash
+   tail -c 200 migration_export/<timestamp>/facilitador_sped.sql
+   # deve terminar com "-- PostgreSQL database dump complete"
+   tar tzf migration_export/<timestamp>/sped_uploads.tar.gz | head
+   # deve listar arquivos, sem erro
+   ```
+
+3. **[MANUAL]** Transferir essa pasta pra VPS (scp/SFTP). Primeiro crie o
+   diretório de destino na VPS — se ele não existir, o `scp -r` cria
+   `/root/migration_export` diretamente como cópia da pasta `<timestamp>`
+   (sem uma subpasta com esse nome dentro), e o `cd` do passo 5 falha com
+   "No such file or directory":
+   ```bash
+   ssh usuario@vps 'mkdir -p /root/migration_export'
    scp -r migration_export/<timestamp> usuario@vps:/root/migration_export
    ```
 
@@ -82,6 +112,14 @@ Dentro de um projeto novo (ou existente) no Easypanel:
    ```
 
 5. **[já pronto]** Ainda via SSH na VPS, rodar:
+
+   **Atenção:** não rode `alembic upgrade head` antes deste passo, mesmo
+   que o `docs/deploy-railway.md` mencione esse comando pra um deploy do
+   zero. O dump já inclui o schema completo (e a tabela `alembic_version`
+   preenchida) — rodar migrations antes do restore só cria tabelas que o
+   restore em seguida vai pular silenciosamente ou falhar ruidosamente ao
+   tentar recriar. Só rode `alembic upgrade head` depois, num deploy
+   futuro que adicione novas migrations.
    ```bash
    cd /root/migration_export/<timestamp>
    /caminho/pro/repo/scripts/migrate_import.sh . "<DATABASE_URL sem +asyncpg — a string bruta gerada pelo Easypanel>" "<rede_docker>" "<volume_uploads>"
@@ -111,12 +149,25 @@ Dentro de um projeto novo (ou existente) no Easypanel:
 ## 6. Corte e rollback
 
 Só depois da validação da Section 5: apontar o DNS final (se ainda não
-apontado) e considerar a VPS como fonte de verdade. Manter o Docker local
-**desligado, mas intacto** (não remover os volumes `facilitadorsped_postgres_data`
-e `facilitadorsped_sped_uploads`) por alguns dias — se algo falhar, é só
-religar o Docker local, reverter o DNS e voltar a aceitar novos jobs
-localmente, encerrando a janela de manutenção aberta na Section 4, passo 1;
-nada foi destruído até a decisão explícita de descartar esses volumes.
+apontado) e considerar a VPS como fonte de verdade. Desligar o Docker
+local com `docker compose down` (**sem** a flag `-v`) — `down -v` remove
+os volumes `facilitadorsped_postgres_data` e `facilitadorsped_sped_uploads`,
+exatamente o fallback que precisamos manter intacto. Manter o Docker local
+**desligado, mas intacto** (não remover esses dois volumes) por alguns
+dias — se algo falhar, é só religar o Docker local, reverter o DNS e
+voltar a aceitar novos jobs localmente, encerrando a janela de manutenção
+aberta na Section 4, passo 1; nada foi destruído até a decisão explícita
+de descartar esses volumes.
+
+Depois que a validação da Section 5 passar (e só depois), apague a cópia
+do export que ficou na VPS — ela contém dump completo do banco (hashes de
+senha, CNPJs reais, valores fiscais) e todos os uploads, sem criptografia
+em repouso, e não deveria continuar ali indefinidamente:
+```bash
+ssh usuario@vps 'rm -rf /root/migration_export'
+```
+Mantenha a cópia local (`migration_export/<timestamp>/` na sua máquina)
+por enquanto, conforme a janela de rollback acima.
 
 ## Próximo passo recomendado (fora desta migração)
 

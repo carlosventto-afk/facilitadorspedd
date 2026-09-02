@@ -16,6 +16,12 @@ UPLOADS_VOLUME="facilitadorsped_sped_uploads"
 OUT_DIR="migration_export/$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUT_DIR"
 
+# Se pg_dump ou o tar via docker run falharem no meio do caminho, o
+# redirecionamento (>) já criou o arquivo de saída — sem este trap ele
+# ficaria pra trás, zerado ou truncado, e poderia passar por um export
+# válido numa migração sem nenhum outro backup.
+trap 'rm -f "$OUT_DIR/facilitador_sped.sql" "$OUT_DIR/sped_uploads.tar.gz"' ERR
+
 echo "Exportando banco de dados ($DB_CONTAINER)..."
 docker exec "$DB_CONTAINER" pg_dump -U "$DB_USER" "$DB_NAME" > "$OUT_DIR/facilitador_sped.sql"
 

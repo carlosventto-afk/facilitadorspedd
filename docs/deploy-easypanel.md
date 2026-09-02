@@ -11,8 +11,12 @@ esse acesso. O código e os scripts (`docker-compose.easypanel.yml`,
 Dentro de um projeto novo (ou existente) no Easypanel:
 
 1. **Add Service → Postgres** (template nativo). Anote a `DATABASE_URL`
-   gerada (aba "Credentials"/"Connect" do serviço) — vai ser usada nas
-   Sections 2 e 4.
+   gerada (aba "Credentials"/"Connect" do serviço) — é usada, em duas
+   formas diferentes, nas Sections 2 e 4: a Section 2 precisa de uma cópia
+   com o prefixo trocado para `postgresql+asyncpg://`; a Section 4 precisa
+   da string bruta, exatamente como o Easypanel gerou (sem `+asyncpg`),
+   porque vai direto pro `psql` dentro do `scripts/migrate_import.sh`, que
+   não entende esse prefixo. Guarde as duas formas separadamente.
 2. **Add Service → Redis** (template nativo). Anote a URL de conexão.
 3. **Add Service → Compose**, apontando pro `docker-compose.easypanel.yml`
    deste repositório (conectar o GitHub, escolher o arquivo). Isso cria
@@ -27,7 +31,7 @@ Dentro de um projeto novo (ou existente) no Easypanel:
 
 | Variável | Valor |
 |---|---|
-| `DATABASE_URL` | a do Postgres do Easypanel (Section 1.1), com prefixo trocado para `postgresql+asyncpg://` (driver assíncrono, igual ao Railway) |
+| `DATABASE_URL` | a do Postgres do Easypanel (Section 1.1), **com prefixo trocado para `postgresql+asyncpg://`** (driver assíncrono, igual ao Railway) — essa é a forma modificada; não é a mesma string usada na Section 4 |
 | `REDIS_URL`, `CELERY_BROKER_URL` | a do Redis do Easypanel (Section 1.2) |
 | `CELERY_RESULT_BACKEND` | mesma URL do Redis, com `/1` no final |
 | `SECRET_KEY` | **o mesmo valor já usado no `.env` local hoje** — não gerar um novo, senão invalida sessões ativas |
@@ -52,35 +56,46 @@ Dentro de um projeto novo (ou existente) no Easypanel:
 
 ## 4. Migração dos dados
 
-1. **[já pronto]** Na sua máquina, com o Docker local ainda rodando:
+1. **[MANUAL]** Abrir a janela de manutenção: pare de aceitar novos jobs no
+   sistema local antes de exportar — não crie nem envie novos uploads, e
+   deixe qualquer job em processamento terminar (ou cancele-o) antes do
+   próximo passo. Esse é o corte de fato: qualquer job criado no Docker
+   local depois deste ponto **não** vai pro export e não existirá na VPS.
+
+2. **[já pronto]** Na sua máquina, com o Docker local ainda rodando:
    ```bash
    ./scripts/migrate_export.sh
    ```
    Gera `migration_export/<timestamp>/` com `facilitador_sped.sql` e
    `sped_uploads.tar.gz`.
 
-2. **[MANUAL]** Transferir essa pasta pra VPS (scp/SFTP):
+3. **[MANUAL]** Transferir essa pasta pra VPS (scp/SFTP):
    ```bash
    scp -r migration_export/<timestamp> usuario@vps:/root/migration_export
    ```
 
-3. **[MANUAL]** Via SSH na VPS, descobrir os dois valores que o script de
+4. **[MANUAL]** Via SSH na VPS, descobrir os dois valores que o script de
    import precisa:
    ```bash
    docker network ls          # rede do projeto Easypanel, ex. "<projeto>_default"
    docker volume ls | grep -i upload   # volume de uploads do serviço Compose
    ```
 
-4. **[já pronto]** Ainda via SSH na VPS, rodar:
+5. **[já pronto]** Ainda via SSH na VPS, rodar:
    ```bash
    cd /root/migration_export/<timestamp>
-   /caminho/pro/repo/scripts/migrate_import.sh . "<DATABASE_URL>" "<rede_docker>" "<volume_uploads>"
+   /caminho/pro/repo/scripts/migrate_import.sh . "<DATABASE_URL sem +asyncpg — a string bruta gerada pelo Easypanel>" "<rede_docker>" "<volume_uploads>"
    ```
    (Se o repositório não estiver clonado na VPS, copiar só o
    `scripts/migrate_import.sh` junto com a pasta do export é suficiente —
    o script não depende de mais nada do repo. Os 4 argumentos, nessa ordem,
    são: diretório do export, `DATABASE_URL` do Postgres do Easypanel, nome
-   da rede Docker e nome do volume de uploads descobertos no passo 3.)
+   da rede Docker e nome do volume de uploads descobertos no passo 4.
+   **Atenção:** use a `DATABASE_URL` bruta anotada na Section 1 — **não** a
+   versão com `postgresql+asyncpg://` configurada na Section 2. O script
+   passa esse valor direto pro `psql` [`scripts/migrate_import.sh:39`], que
+   não reconhece o prefixo `+asyncpg`; usar a forma da Section 2 aqui quebra
+   o restore.)
 
 ## 5. Validação pós-migração [MANUAL]
 
@@ -99,8 +114,9 @@ Só depois da validação da Section 5: apontar o DNS final (se ainda não
 apontado) e considerar a VPS como fonte de verdade. Manter o Docker local
 **desligado, mas intacto** (não remover os volumes `facilitadorsped_postgres_data`
 e `facilitadorsped_sped_uploads`) por alguns dias — se algo falhar, é só
-religar o Docker local e reverter o DNS; nada foi destruído até a decisão
-explícita de descartar esses volumes.
+religar o Docker local, reverter o DNS e voltar a aceitar novos jobs
+localmente, encerrando a janela de manutenção aberta na Section 4, passo 1;
+nada foi destruído até a decisão explícita de descartar esses volumes.
 
 ## Próximo passo recomendado (fora desta migração)
 

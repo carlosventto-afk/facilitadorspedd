@@ -23,22 +23,25 @@ DATABASE_URL="$2"
 DOCKER_NETWORK="$3"
 UPLOADS_VOLUME="$4"
 
+# Resolve EXPORT_DIR to absolute path to handle both relative and absolute paths
+EXPORT_DIR="$(cd "$EXPORT_DIR" && pwd)"
+
 if [ ! -f "$EXPORT_DIR/facilitador_sped.sql" ] || [ ! -f "$EXPORT_DIR/sped_uploads.tar.gz" ]; then
   echo "Erro: $EXPORT_DIR precisa conter facilitador_sped.sql e sped_uploads.tar.gz" >&2
   exit 1
 fi
 
 echo "Restaurando banco de dados..."
-docker run --rm -i \
+docker run --rm \
   --network "$DOCKER_NETWORK" \
-  -v "$(pwd)/$EXPORT_DIR:/backup" \
+  -v "$EXPORT_DIR:/backup" \
   postgres:16-alpine \
-  psql "$DATABASE_URL" -f /backup/facilitador_sped.sql
+  psql -v ON_ERROR_STOP=1 -1 "$DATABASE_URL" -f /backup/facilitador_sped.sql
 
 echo "Restaurando arquivos de upload no volume $UPLOADS_VOLUME..."
 docker run --rm \
   -v "$UPLOADS_VOLUME:/data" \
-  -v "$(pwd)/$EXPORT_DIR:/backup" \
+  -v "$EXPORT_DIR:/backup" \
   alpine tar xzf /backup/sped_uploads.tar.gz -C /data
 
 echo ""

@@ -45,6 +45,10 @@ backend/alembic/versions/*.pyc
 # Storage local de arquivos de job (ver app/core/storage.py)
 backend/data/
 
+# Export local de dados para a migração pra VPS (dump SQL + uploads) —
+# nunca deve ir pro histórico do git (dados reais de cliente).
+migration_export/
+
 # Dados reais de cliente usados para teste manual (CNPJ, contador, valores
 # fiscais reais) — nunca deve ir para o histórico do git.
 Arquivo Modelo/

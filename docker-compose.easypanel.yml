@@ -16,6 +16,8 @@ services:
       FRONTEND_URL: ${FRONTEND_URL}
     volumes:
       - sped_uploads:/app/data
+    networks:
+      - easypanel-notafiscal
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
   celery_worker:
@@ -31,7 +33,18 @@ services:
       SECRET_KEY: ${SECRET_KEY}
     volumes:
       - sped_uploads:/app/data
+    networks:
+      - easypanel-notafiscal
     command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=2
 
 volumes:
   sped_uploads:
+
+# Rede que o Easypanel cria automaticamente por projeto, no formato
+# "easypanel-<nome-do-projeto>" — é nela que o Postgres/Redis nativos do
+# projeto ficam, então backend/celery_worker precisam entrar nela pra
+# resolver o hostname desses serviços. Se o projeto no Easypanel tiver
+# outro nome, troque "notafiscal" abaixo pelo nome real do projeto.
+networks:
+  easypanel-notafiscal:
+    external: true
